@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SoundLab Vocalizer</title>
+  <meta name="description" content="Remove vocals, record your take over the instrumental, and auto-tune it with an editable pitch graph." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cff'/%3E%3Cpath d='M6 20c3 0 3-8 6-8s3 12 6 12 3-16 6-16 2 6 2 6' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M6 20c3 0 3-8 6-8s3 12 6 12 3-16 6-16 2 6 2 6" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>
+      <span>SoundLab <strong>Vocalizer</strong></span>
+    </div>
+    <div class="status" id="status" role="status" aria-live="polite">
+      <span id="statusText">Start by importing a song.</span>
+      <progress id="statusProgress" max="1" value="0" hidden></progress>
+    </div>
+  </header>
+
+  <main>
+    <!-- 1. IMPORT -->
+    <section class="card" id="stepImport">
+      <h2><span class="num">1</span> Import the music</h2>
+      <div class="grid2">
+        <label class="drop">
+          <input type="file" id="songFile" accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg" />
+          <strong>Import a song</strong>
+          <span>MP3, WAV, M4A, FLAC… The vocals get removed.</span>
+        </label>
+        <label class="drop">
+          <input type="file" id="stemFile" accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg" />
+          <strong>Import a DAW instrumental</strong>
+          <span>Bounce or export your project without the vocal track. No removal needed.</span>
+        </label>
+      </div>
+      <p class="info" id="songInfo"></p>
+      <div class="row" id="removeRow" hidden>
+        <label class="slider">Removal strength
+          <input type="range" id="removeStrength" min="0" max="1" step="0.05" value="0.9" />
+          <output for="removeStrength">90%</output>
+        </label>
+        <button id="removeBtn" class="primary">Remove vocals</button>
+      </div>
+      <div class="row" id="previewRow" hidden>
+        <button id="previewOriginal" class="ghost" data-preview="original">▶ Original</button>
+        <button id="previewInstrumental" class="ghost" data-preview="instrumental">▶ Instrumental</button>
+      </div>
+    </section>
+
+    <!-- 2. KEY -->
+    <section class="card locked" id="stepKey">
+      <h2><span class="num">2</span> Song key</h2>
+      <div class="row">
+        <div class="keybadge" id="keyResult">—</div>
+        <label>Key
+          <select id="keyTonic"></select>
+        </label>
+        <label>Scale
+          <select id="keyMode">
+            <option value="major">Major</option>
+            <option value="minor">Minor</option>
+            <option value="chromatic">Chromatic (any note)</option>
+          </select>
+        </label>
+        <button id="detectKeyBtn" class="ghost">Detect again</button>
+      </div>
+      <p class="hint">The key is detected automatically. Change it here if it's wrong; the auto-tune snaps to these notes.</p>
+    </section>
+
+    <!-- 3. RECORD -->
+    <section class="card locked" id="stepRecord">
+      <h2><span class="num">3</span> Record your vocal</h2>
+      <p class="hint">🎧 Put on <strong>headphones</strong> so the music doesn't leak into the mic. The instrumental plays while you sing.</p>
+      <div class="row">
+        <button id="recordBtn" class="record">● Record</button>
+        <button id="stopRecBtn" class="ghost" disabled>■ Stop</button>
+        <div class="meter" aria-label="Mic level"><div id="meterFill"></div></div>
+        <span id="recTime" class="mono">0:00</span>
+      </div>
+      <div class="row">
+        <label class="slider">Latency fix
+          <input type="range" id="latency" min="0" max="400" step="1" value="40" />
+          <output for="latency">40 ms</output>
+        </label>
+        <label class="file-inline">or import a vocal take
+          <input type="file" id="vocalFile" accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg" />
+        </label>
+      </div>
+      <p class="hint">If your vocal sounds late against the music, raise <em>Latency fix</em> and re-record.</p>
+    </section>
+
+    <!-- 4. TUNE -->
+    <section class="card locked wide" id="stepTune">
+      <h2><span class="num">4</span> Auto-tune &amp; edit</h2>
+      <div class="row controls">
+        <label class="slider">Retune speed
+          <input type="range" id="retune" min="0" max="200" step="1" value="25" />
+          <output for="retune">25 ms</output>
+        </label>
+        <label class="slider">Off-key tolerance
+          <input type="range" id="tolerance" min="5" max="50" step="1" value="20" />
+          <output for="tolerance">±20¢</output>
+        </label>
+        <label class="slider">Amount
+          <input type="range" id="amount" min="0" max="1" step="0.05" value="1" />
+          <output for="amount">100%</output>
+        </label>
+        <button id="reautoBtn" class="ghost" title="Discard edits and re-run auto-tune">Reset to auto</button>
+      </div>
+
+      <div class="toolbar" role="toolbar" aria-label="Editor tools">
+        <div class="seg" id="tools">
+          <button data-tool="note" class="active" title="Note (N): click where a note should be, or drag a note block up/down">◆ Note</button>
+          <button data-tool="draw" title="Draw (D): paint the pitch line by hand">✎ Draw</button>
+          <button data-tool="bypass" title="Bypass (B): leave these parts untouched">⌀ Bypass</button>
+          <button data-tool="restore" title="Restore (R): back to auto-tune">↺ Restore</button>
+          <button data-tool="pan" title="Pan (H): drag to move around">✋ Pan</button>
+        </div>
+        <label class="check"><input type="checkbox" id="snap" checked /> Snap to notes</label>
+        <div class="seg">
+          <button id="undoBtn" title="Undo (Ctrl+Z)">↶</button>
+          <button id="redoBtn" title="Redo (Ctrl+Shift+Z)">↷</button>
+        </div>
+        <div class="seg">
+          <button id="zoomOut" title="Zoom out (−)">−</button>
+          <button id="zoomFit" title="Fit whole take (0)">Fit</button>
+          <button id="zoomIn" title="Zoom in (+)">+</button>
+        </div>
+        <span class="readout mono" id="readout"></span>
+      </div>
+
+      <div class="editor-wrap">
+        <canvas id="editor" tabindex="0" aria-label="Pitch editor"></canvas>
+        <div class="editor-empty" id="editorEmpty">Record or import a vocal to see its pitch here.</div>
+      </div>
+      <div class="legend">
+        <span><i class="sw good"></i>in tune</span>
+        <span><i class="sw warn"></i>slightly off</span>
+        <span><i class="sw bad"></i>off-key</span>
+        <span><i class="sw block"></i>target note</span>
+        <span><i class="sw line"></i>tuned result</span>
+        <span class="hint">Scroll to move · Ctrl/⌘+scroll to zoom time · Alt+scroll to zoom pitch · Space+drag to pan</span>
+      </div>
+
+      <div class="transport">
+        <button id="playBtn" class="primary">▶ Play</button>
+        <button id="stopBtn" class="ghost">■</button>
+        <span class="mono" id="timeDisplay">0:00.0 / 0:00.0</span>
+        <div class="seg" id="abToggle">
+          <button data-ab="tuned" class="active">Tuned</button>
+          <button data-ab="raw">Original</button>
+        </div>
+        <label class="slider small">Music
+          <input type="range" id="instGain" min="0" max="1.5" step="0.01" value="0.8" />
+        </label>
+        <label class="slider small">Vocal
+          <input type="range" id="vocGain" min="0" max="2" step="0.01" value="1" />
+        </label>
+      </div>
+    </section>
+
+    <!-- 5. EXPORT -->
+    <section class="card locked" id="stepExport">
+      <h2><span class="num">5</span> Export</h2>
+      <div class="row">
+        <button id="exportVocal" class="ghost">⬇ Tuned vocal (WAV)</button>
+        <button id="exportMix" class="primary">⬇ Full mix (WAV)</button>
+      </div>
+      <p class="hint">Import the tuned vocal back into your DAW. It's the same length as your take and starts at 0:00.</p>
+    </section>
+  </main>
+
+  <footer>Everything runs in your browser. Your audio never leaves this device.</footer>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

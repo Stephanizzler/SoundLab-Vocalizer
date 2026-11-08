@@ -1,0 +1,12 @@
+{
+  "name": "soundlab-vocalizer",
+  "version": "0.1.0",
+  "description": "Remove vocals, record your take, and auto-tune it with an editable pitch graph — all in the browser.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "license": "UNLICENSED"
+}
