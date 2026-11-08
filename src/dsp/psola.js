@@ -7,8 +7,10 @@ import { hzToMidi } from './autotune.js';
  *
  * pitch:     { t0, hopSec, f0 } from detectPitch
  * corrected: per-frame MIDI pitch to render (NaN = leave as is)
+ * formant:   >1 moves formants up (brighter, "female"), <1 down ("male").
+ *            Applied to voiced grains only so consonants stay natural.
  */
-export function psola(x, sampleRate, pitch, corrected) {
+export function psola(x, sampleRate, pitch, corrected, { formant = 1 } = {}) {
   const N = x.length;
   const { t0, hopSec, f0 } = pitch;
   const F = f0.length;
@@ -44,15 +46,34 @@ export function psola(x, sampleRate, pitch, corrected) {
     while (k + 1 < marks.length && Math.abs(marks[k + 1] - s) <= Math.abs(marks[k] - s)) k++;
     const i = frameAt(s);
     const P = periods[k];
-    const L = Math.max(2, Math.round(P));
-    const a = Math.round(marks[k]);
-    const c = Math.round(s);
-    for (let j = -L; j <= L; j++) {
-      const src = a + j, dst = c + j;
-      if (src < 0 || src >= N || dst < 0 || dst >= N) continue;
-      const w = 0.5 + 0.5 * Math.cos((Math.PI * j) / L);
-      out[dst] += x[src] * w;
-      wsum[dst] += w;
+    const voiced = f0[i] > 0;
+    if (formant === 1 || !voiced) {
+      const L = Math.max(2, Math.round(P));
+      const a = Math.round(marks[k]);
+      const c = Math.round(s);
+      for (let j = -L; j <= L; j++) {
+        const src = a + j, dst = c + j;
+        if (src < 0 || src >= N || dst < 0 || dst >= N) continue;
+        const w = 0.5 + 0.5 * Math.cos((Math.PI * j) / L);
+        out[dst] += x[src] * w;
+        wsum[dst] += w;
+      }
+    } else {
+      // Resample the grain: squeezing it raises the formants, stretching lowers them.
+      const L = Math.max(2, Math.round(P / formant));
+      const a = marks[k];
+      const c = Math.round(s);
+      for (let j = -L; j <= L; j++) {
+        const dst = c + j;
+        if (dst < 0 || dst >= N) continue;
+        const pos = a + j * formant;
+        const i0 = Math.floor(pos);
+        if (i0 < 0 || i0 + 1 >= N) continue;
+        const v = x[i0] + (x[i0 + 1] - x[i0]) * (pos - i0);
+        const w = 0.5 + 0.5 * Math.cos((Math.PI * j) / L);
+        out[dst] += v * w;
+        wsum[dst] += w;
+      }
     }
     s += P / ratioAt(i);
   }

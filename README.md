@@ -1,33 +1,42 @@
 # SoundLab Vocalizer
 
-Sing over any song and get a polished, in-tune vocal, all in your browser.
+Sing over any song and turn your take into a finished, studio-polished vocal, all in your browser.
 
-1. **Import the music.** Load a song (MP3/WAV/M4A/FLAC…) and SoundLab removes the lead vocal, or import an instrumental bounced from your DAW.
-2. **Key detection.** The song's key is detected automatically, and you can override it.
-3. **Record.** With headphones on, the instrumental plays while you sing. The take is captured sample-accurately, with latency compensation. You can also import an existing vocal take.
-4. **Auto-tune and edit.** Your vocal is pitch-tracked against the song's key and tuned. An editable pitch graph shows exactly where you were off:
-   - green / amber / red line: what you sang, colored by how far off the note was
-   - purple blocks: the target notes
-   - dark/white line: the tuned result
-5. **Export** the tuned vocal (to drop back into your DAW) or the full mix as WAV.
+## How it works
 
-## Editing the pitch graph
+**1. Music.** Choose how to start:
+- **My project:** upload a bounce of your DAW project, exported without the vocal.
+- **An artist's song:** upload any song and the lead vocal is removed automatically.
+
+The key and tempo are detected for you.
+
+**2. Record.** Plug in your headphones, hit the big record button and sing along while the music plays. Your take lines up exactly with the music. If it still sounds late, use *Advanced → Latency fix*. You can also import an existing vocal take.
+
+**3. Studio.** Each processor has its own tab with an on/off switch. They run in this order:
+
+| Tab | What it does |
+| --- | --- |
+| **Auto-Tune** | Press **Auto-tune the track**. A scan line sweeps across the pitch graph and draws every correction in **cyan**, shaded between what you sang and where it was moved. You can fine-tune by hand afterwards (tools below). |
+| **Harmonizer** | 1–4 harmony layers made from your own voice. Each layer has its own **interval** (3rd/4th/5th/6th above or below, octaves, double, or ✨ *Smart*), **voice** (Natural, Female, Male, Deep bass, Bright, Choir), level, pan and feel. **Use recommended harmony** looks at where your melody sits and listens to the chord under each note to pick harmony notes that fit. |
+| **Vocoder** | Talking-synth presets (Subtle shimmer, Classic robot, Synth choir, Whisper, Drone, Alien, Monster), a **How wild?** macro from subtle to unhinged, and fine controls (synth voice, octave, bands, character, detune, consonants, width, mix). |
+| **Echo** | Slapback, quarter, dotted 8th, ping-pong, dub and long-tail presets, synced to the song tempo. Controls for repeats, level, tone, low cut and stereo spread. |
+| **Reverb** | Vocal booth, Small room, Studio, Plate, Concert hall, Church, Cathedral and Arena presets. Controls for **direction** (left / center / right), length, room size, pre-delay, surfaces (bright ↔ soft), early reflections, width and level, with a live room diagram. |
+| **Bounce** | Shows the effect chain, lets you set music and vocal levels, then renders **one stereo WAV** of your processed vocal plus the music. You can also export the processed vocal on its own. |
+
+The play bar at the bottom works on every tab. *With effects / Dry* switches between the full chain and your raw take.
+
+### Pitch editor tools (Auto-Tune tab)
 
 | Tool | Key | What it does |
 | --- | --- | --- |
-| ◆ Note | `N` | Click where a note *should* be and the note block jumps there. Drag to move it up or down. |
-| ⟋ Line | `L` | Click to place dots, and the pitch follows straight lines between them. Drag a dot to move it. Enter, Esc or double-click finishes the line. |
-| ✎ Draw | `D` | Paint the pitch by hand (snaps to semitones unless *Snap to notes* is off). |
-| ⌀ Bypass | `B` | Leave the painted region untouched (no correction, which is good for slides and breaths). |
+| ◆ Note | `N` | Click where a note *should* be and it jumps there. Drag to move it. |
+| ⟋ Line | `L` | Click to place dots joined by straight pitch lines. Drag a dot to move it. Enter, Esc or double-click finishes the line. |
+| ✎ Draw | `D` | Paint the pitch by hand. |
+| ⌀ Bypass | `B` | Leave a part untouched (slides, breaths). |
 | ↺ Restore | `R` | Paint the automatic correction back in. |
-| ✋ Pan | `H` | Drag to move around (also middle/right-drag or Space+drag). |
+| ✋ Pan | `H` | Move around. You can also drag the waveform strip under the graph. |
 
-The waveform strip under the graph shows the whole take. Drag the highlighted window to move around, or click anywhere to jump there. Untick *Note blocks* for a curves-only view.
-
-Zoom: Ctrl/⌘ + scroll (time), Alt + scroll (pitch), `+` / `-` / `0` (fit). Scroll pans.
-Undo/redo: Ctrl/⌘+Z, Ctrl/⌘+Shift+Z.
-
-**Retune speed** controls how fast the correction snaps: 0 ms gives the hard "robot" effect, and 30–80 ms sounds natural. **Amount** blends between your original and the full correction.
+Ctrl/⌘+scroll zooms time, Alt+scroll zooms pitch, `+` `-` `0` zoom from the keyboard, and Ctrl/⌘+Z undoes.
 
 ## Run it
 
@@ -36,24 +45,24 @@ npm start        # http://localhost:5173
 npm test         # DSP unit tests (Node 18+)
 ```
 
-No dependencies or build step. It's plain ES modules, so any static file server works. Microphone access requires `localhost` or HTTPS.
+There are no dependencies and no build step. Any static HTTPS host works, for example GitHub Pages. The microphone needs `localhost` or HTTPS.
 
-## How it works
+## Under the hood
 
 | Stage | Technique | File |
 | --- | --- | --- |
-| Vocal removal | STFT center-channel extraction: attenuates bins whose L/R are correlated (centered) in the 120 Hz–9 kHz vocal band, keeping bass and side-panned parts | `src/dsp/vocal-remover.js` |
-| Key detection | Chromagram + Krumhansl–Kessler key profiles | `src/dsp/key-detect.js` |
-| Pitch tracking | YIN on a decimated signal, 10 ms hop, octave-error cleanup | `src/dsp/pitch-detect.js` |
-| Target notes | Nearest in-key note on vibrato-smoothed pitch, with hysteresis | `src/dsp/autotune.js` |
-| Retuning | One-pole glide toward the target (retune speed) | `src/dsp/autotune.js` |
-| Pitch shifting | TD-PSOLA, which preserves timing and roughly preserves formants | `src/dsp/psola.js` |
-| Recording | AudioWorklet that starts capture on the exact frame the backing track starts | `src/audio/recorder.js` |
-| Editor | Canvas piano-roll with note/draw/bypass/restore tools | `src/ui/pitch-editor.js` |
+| Vocal removal | STFT center-channel extraction (bass and side-panned parts kept) | `src/dsp/vocal-remover.js` |
+| Key / tempo / chords | Krumhansl–Kessler key profiles; onset autocorrelation; per-note chroma | `src/dsp/key-detect.js` |
+| Pitch tracking | YIN, 10 ms hop | `src/dsp/pitch-detect.js` |
+| Auto-Tune | In-key targets on vibrato-smoothed pitch, retune glide, TD-PSOLA | `src/dsp/autotune.js`, `src/dsp/psola.js` |
+| Harmonizer | Diatonic and chord-aware intervals, PSOLA with formant shifting for voice character | `src/dsp/harmony.js` |
+| Vocoder | Band-pass filter-bank channel vocoder with a polyBLEP synth carrier that follows your melody | `src/dsp/vocoder.js` |
+| Echo | Stereo feedback delay with filters in the loop, ping-pong | `src/dsp/echo.js` |
+| Reverb | Generated stereo room impulse (early reflections + damped tail) with FFT convolution | `src/dsp/reverb.js` |
+| Effects chain | Runs in a Web Worker and caches each stage, so changing the reverb only re-renders the reverb | `src/engine/` |
 
-## Limitations and next steps
+## Limitations
 
-- **DAW project files** (`.als`, `.logicx`, `.flp`, `.ptx`, …) are proprietary and can't be opened in a browser. Export or bounce an instrumental (and optionally the vocal) as WAV instead. Next step: import multiple stems, or MIDI/AAF/OMF.
-- **Vocal removal** uses the classic center-channel method. It works best on studio stereo mixes with a centered lead vocal, and leaves some reverb tails and centered instruments partially reduced. An ML source separator (Demucs/Spleeter, for example, run server-side or via ONNX/WebGPU) would give much cleaner results.
-- The pitch tracker is monophonic, built for a single lead vocal.
-- Next ideas: note splitting/merging in the editor, timing (not just pitch) editing, formant control, saving and loading sessions, and a mobile layout for the editor.
+- DAW project files (`.als`, `.logicx`, `.flp`, …) can't be opened in a browser, so export a bounce instead.
+- Vocal removal uses the classic center-channel method. A machine-learning separator would be cleaner.
+- Tempo detection needs a clear beat, and you can type the BPM on the Echo tab.

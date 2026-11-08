@@ -22,7 +22,8 @@ const css = (name) => getComputedStyle(document.documentElement).getPropertyValu
  * pitch), restore (back to auto-tune), pan.
  */
 export class PitchEditor {
-  constructor(canvas, { onEdit, onLiveEdit, onSeek, onHover } = {}) {
+  constructor(canvas, { onEdit, onLiveEdit, onSeek, onHover, onNeedApply } = {}) {
+    this.onNeedApply = onNeedApply;
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onEdit = onEdit;
@@ -43,6 +44,8 @@ export class PitchEditor {
     this.hover = null;
     this.spaceHeld = false;
     this.showBlocks = true;
+    this.applied = true; // false = raw take only, before "Auto-tune the track"
+    this.reveal = Infinity; // scan position in seconds while auto-tuning animates
     this.chain = null; // active Line-tool anchor chain
     this.viewListeners = [];
 
@@ -74,6 +77,8 @@ export class PitchEditor {
   setScale(pcs) { this.pcs = pcs; this.draw(); }
   setTolerance(c) { this.toleranceCents = c; this.draw(); }
   setPlayhead(t) { this.playhead = t; this.draw(); }
+  setApplied(on) { this.applied = on; if (!on) this.endChain(); this.draw(); }
+  setReveal(t) { this.reveal = t; this.draw(); }
   setTool(t) {
     if (t !== 'line') this.endChain();
     this.tool = t;
@@ -205,6 +210,7 @@ export class PitchEditor {
       return;
     }
     if (!this.data) return;
+    if (!this.applied) { this.onNeedApply?.(); return; }
     const t = this.xt(x), m = this.ym(y);
     const i = this.timeFrame(t);
 
@@ -373,6 +379,7 @@ export class PitchEditor {
       grid: css('--editor-grid'), text: css('--text-muted'), key: css('--key-white'), keyBlack: css('--key-black'),
       accent: css('--accent'), good: css('--good'), warn: css('--warn'), bad: css('--bad'),
       tuned: css('--tuned-line'), playhead: css('--playhead'), ruler: css('--surface-2'),
+      fix: css('--fix'), raw: css('--raw-line'),
     };
     g.clearRect(0, 0, w, h);
     g.fillStyle = col.bg; g.fillRect(0, 0, w, h);
@@ -472,6 +479,13 @@ export class PitchEditor {
     const iB = Math.min(midi.length - 1, this.timeFrame(v.t1) + 1);
     const frameW = (this.data.hopSec / (v.t1 - v.t0)) * (this.w - GUTTER);
     const stride = Math.max(1, Math.floor(1 / Math.max(frameW, 1e-6) / 1.5));
+    // Everything left of the scan line shows the auto-tune result.
+    const scanning = this.applied && this.reveal < this.duration;
+    const revealT = this.applied ? this.reveal : -Infinity;
+    const revealX = Math.min(this.w, Math.max(GUTTER, this.tx(revealT)));
+
+    g.save();
+    g.beginPath(); g.rect(GUTTER, RULER, revealX - GUTTER, this.h - RULER); g.clip();
 
     // Target note blocks
     const blockH = Math.max(4, rowH * 0.72);
@@ -482,9 +496,9 @@ export class PitchEditor {
       let sum = 0;
       for (let j = s.start; j < s.end; j++) sum += target[j];
       const y = this.my(sum / (s.end - s.start));
-      g.fillStyle = col.accent; g.globalAlpha = 0.16;
+      g.fillStyle = col.accent; g.globalAlpha = 0.14;
       roundRect(g, x0, y - blockH / 2, Math.max(2, x1 - x0), blockH, Math.min(4, blockH / 2)); g.fill();
-      g.globalAlpha = 0.45; g.strokeStyle = col.accent; g.lineWidth = 1; g.stroke();
+      g.globalAlpha = 0.4; g.strokeStyle = col.accent; g.lineWidth = 1; g.stroke();
       g.globalAlpha = 1;
       if (x1 - x0 > 34 && blockH > 11) {
         g.fillStyle = col.accent; g.font = '10px system-ui, sans-serif'; g.textBaseline = 'middle';
@@ -492,31 +506,64 @@ export class PitchEditor {
       }
     }
 
-    // Sung pitch, coloured by distance from its target
+    // Corrections: shade between what was sung and where it was moved to.
+    const FIX_MIN = 0.03; // 3 cents
+    if (corrected) {
+      g.fillStyle = col.fix; g.globalAlpha = 0.22;
+      for (let i = iA; i < iB; i += stride) {
+        const j = Math.min(iB, i + stride);
+        const a = midi[i], b = midi[j], ca = corrected[i], cb = corrected[j];
+        if ([a, b, ca, cb].some(Number.isNaN) || Math.abs(a - b) > 1.5) continue;
+        if (Math.abs(ca - a) < FIX_MIN && Math.abs(cb - b) < FIX_MIN) continue;
+        const xa = this.tx(this.frameTime(i)), xb = this.tx(this.frameTime(j));
+        g.beginPath();
+        g.moveTo(xa, this.my(a)); g.lineTo(xb, this.my(b)); g.lineTo(xb, this.my(cb)); g.lineTo(xa, this.my(ca));
+        g.closePath(); g.fill();
+      }
+      g.globalAlpha = 1;
+    }
+    g.restore();
+
+    // Sung pitch: neutral before tuning, coloured by how far off it was after.
     const tol = this.toleranceCents / 100;
     g.lineWidth = 2.5; g.lineCap = 'round';
     for (let i = iA; i < iB; i += stride) {
       const j = Math.min(iB, i + stride);
       const a = midi[i], b = midi[j];
       if (Number.isNaN(a) || Number.isNaN(b) || Math.abs(a - b) > 1.5) continue;
-      const t = Number.isNaN(target[i]) ? Math.round(a) : target[i];
-      const off = Math.abs(a - t);
-      g.strokeStyle = off <= tol ? col.good : off <= tol * 2 ? col.warn : col.bad;
+      if (this.frameTime(i) > revealT) g.strokeStyle = col.raw;
+      else {
+        const t = Number.isNaN(target[i]) ? Math.round(a) : target[i];
+        const off = Math.abs(a - t);
+        g.strokeStyle = off <= tol ? col.good : off <= tol * 2 ? col.warn : col.bad;
+      }
       g.beginPath(); g.moveTo(this.tx(this.frameTime(i)), this.my(a)); g.lineTo(this.tx(this.frameTime(j)), this.my(b)); g.stroke();
     }
 
-    // Tuned result
+    // Corrected pitch, in the fix colour wherever a correction was made.
     if (corrected) {
-      g.strokeStyle = col.tuned; g.lineWidth = 2; g.lineJoin = 'round'; g.beginPath();
-      let pen = false;
-      for (let i = iA; i <= iB; i += stride) {
-        const c = corrected[i];
-        if (Number.isNaN(c)) { pen = false; continue; }
-        const x = this.tx(this.frameTime(i)), y = this.my(c);
-        if (pen) g.lineTo(x, y); else g.moveTo(x, y);
-        pen = true;
+      g.save();
+      g.beginPath(); g.rect(GUTTER, RULER, revealX - GUTTER, this.h - RULER); g.clip();
+      g.lineWidth = 2.25; g.lineJoin = 'round'; g.strokeStyle = col.fix;
+      for (let i = iA; i < iB; i += stride) {
+        const j = Math.min(iB, i + stride);
+        const ca = corrected[i], cb = corrected[j];
+        if (Number.isNaN(ca) || Number.isNaN(cb) || Math.abs(ca - cb) > 1.5) continue;
+        const fixed = Math.abs(ca - midi[i]) >= FIX_MIN || Math.abs(cb - midi[j]) >= FIX_MIN;
+        g.globalAlpha = fixed ? 1 : 0.35;
+        g.beginPath(); g.moveTo(this.tx(this.frameTime(i)), this.my(ca)); g.lineTo(this.tx(this.frameTime(j)), this.my(cb)); g.stroke();
       }
-      g.stroke();
+      g.globalAlpha = 1;
+      g.restore();
+    }
+
+    // Scan line while auto-tune is "listening".
+    if (scanning && revealX > GUTTER) {
+      const grad = g.createLinearGradient(revealX - 60, 0, revealX, 0);
+      grad.addColorStop(0, 'rgba(0,0,0,0)');
+      grad.addColorStop(1, col.fix);
+      g.globalAlpha = 0.25; g.fillStyle = grad; g.fillRect(revealX - 60, RULER, 60, this.h - RULER);
+      g.globalAlpha = 1; g.fillStyle = col.fix; g.fillRect(revealX - 1, RULER, 2, this.h - RULER);
     }
   }
 }
