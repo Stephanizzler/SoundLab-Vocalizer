@@ -9,6 +9,7 @@ import { encodeWav } from './dsp/wav.js';
 import { toMono } from './dsp/util.js';
 import { openMicrophone, createRecorder } from './audio/recorder.js';
 import { PitchEditor } from './ui/pitch-editor.js';
+import { Overview, peaks } from './ui/overview.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -46,6 +47,7 @@ function audioCtx() {
 let busyCount = 0;
 function status(text, { progress = null, error = false } = {}) {
   $('statusText').textContent = text;
+  $('statusText').title = text;
   $('status').classList.toggle('error', error);
   const p = $('statusProgress');
   p.hidden = progress === null;
@@ -176,6 +178,8 @@ async function runVocalRemoval() {
 }
 
 async function afterInstrumentalReady() {
+  S.instPeaks = peaks(S.instrumental.getChannelData(0));
+  updateOverview();
   unlock('stepKey', 'stepRecord', 'stepTune', 'stepExport');
   editor.duration = Math.max(editor.duration, S.instrumental.duration);
   if (!S.vocalRaw) { editor.duration = S.instrumental.duration; editor.zoomFit(); }
@@ -361,6 +365,7 @@ $('vocalFile').addEventListener('change', async (e) => {
 async function loadVocal(samples) {
   S.vocalRaw = samples;
   S.vocalTuned = null;
+  S.vocalPeaks = peaks(samples);
   const sr = S.ctx.sampleRate;
   S.pitch = await busy('Analyzing your pitch…', (p) => detectPitch(samples, sr, { onProgress: p }));
   S.midi = pitchToMidi(S.pitch.f0);
@@ -372,6 +377,7 @@ async function loadVocal(samples) {
     t0: S.pitch.t0, hopSec: S.pitch.hopSec, midi: S.midi, target: S.target, autoTarget: S.autoTarget,
     corrected: S.corrected, duration: Math.max(samples.length / sr, S.instrumental?.duration || 0),
   });
+  updateOverview();
   await render();
   const off = countOffKey();
   const total = segmentsFrom(S.autoTarget).length;
@@ -449,6 +455,14 @@ const editor = new PitchEditor($('editor'), {
   },
 });
 showKey();
+const overview = new Overview($('overview'), editor);
+function updateOverview() {
+  const sr = S.ctx?.sampleRate || 44100;
+  overview.setLayers([
+    S.instrumental && { peaks: S.instPeaks, duration: S.instrumental.duration, color: '--text-muted', alpha: 0.35 },
+    S.vocalRaw && { peaks: S.vocalPeaks, duration: S.vocalRaw.length / sr, color: '--accent', alpha: 0.55 },
+  ].filter(Boolean));
+}
 
 for (const id of ['retune', 'amount']) {
   $(id).addEventListener('input', () => { recomputeCorrected(); scheduleRender(400); });
@@ -465,6 +479,7 @@ function selectTool(tool) {
 document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => selectTool(b.dataset.tool)));
 selectTool('note');
 $('snap').addEventListener('change', (e) => { editor.snap = e.target.checked; });
+$('showBlocks').addEventListener('change', (e) => editor.setShowBlocks(e.target.checked));
 $('undoBtn').addEventListener('click', () => editor.undo());
 $('redoBtn').addEventListener('click', () => editor.redo());
 $('zoomIn').addEventListener('click', () => editor.zoomTime(0.5));
@@ -477,7 +492,8 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) editor.redo(); else editor.undo(); return; }
   if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); editor.redo(); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const tools = { n: 'note', d: 'draw', b: 'bypass', r: 'restore', h: 'pan' };
+  if (k === 'escape' || k === 'enter') { editor.endChain(); return; }
+  const tools = { n: 'note', l: 'line', d: 'draw', b: 'bypass', r: 'restore', h: 'pan' };
   if (tools[k]) selectTool(tools[k]);
   else if (k === '+' || k === '=') editor.zoomTime(0.5);
   else if (k === '-') editor.zoomTime(2);
@@ -527,4 +543,4 @@ function fmtTime(t, dec = 0) {
 }
 
 // Expose for debugging in the console.
-window.soundlab = { state: S, editor };
+window.soundlab = { state: S, editor, overview };

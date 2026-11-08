@@ -16,10 +16,13 @@ Sing over any song and get a polished, in-tune vocal, all in your browser.
 | Tool | Key | What it does |
 | --- | --- | --- |
 | ◆ Note | `N` | Click where a note *should* be and the note block jumps there. Drag to move it up or down. |
+| ⟋ Line | `L` | Click to place dots, and the pitch follows straight lines between them. Drag a dot to move it. Enter, Esc or double-click finishes the line. |
 | ✎ Draw | `D` | Paint the pitch by hand (snaps to semitones unless *Snap to notes* is off). |
 | ⌀ Bypass | `B` | Leave the painted region untouched (no correction, which is good for slides and breaths). |
 | ↺ Restore | `R` | Paint the automatic correction back in. |
 | ✋ Pan | `H` | Drag to move around (also middle/right-drag or Space+drag). |
+
+The waveform strip under the graph shows the whole take. Drag the highlighted window to move around, or click anywhere to jump there. Untick *Note blocks* for a curves-only view.
 
 Zoom: Ctrl/⌘ + scroll (time), Alt + scroll (pitch), `+` / `-` / `0` (fit). Scroll pans.
 Undo/redo: Ctrl/⌘+Z, Ctrl/⌘+Shift+Z.

@@ -17,8 +17,9 @@ const css = (name) => getComputedStyle(document.documentElement).getPropertyValu
  *  - blue blocks: target notes the vocal is tuned to
  *  - white line: resulting tuned pitch
  *
- * Tools: draw (pencil), note (click/drag a note block to where it should be),
- * bypass (leave the original pitch), restore (back to auto-tune), pan.
+ * Tools: note (click/drag a note block to where it should be), line (place
+ * dots joined by straight lines), draw (pencil), bypass (leave the original
+ * pitch), restore (back to auto-tune), pan.
  */
 export class PitchEditor {
   constructor(canvas, { onEdit, onLiveEdit, onSeek, onHover } = {}) {
@@ -41,6 +42,9 @@ export class PitchEditor {
     this.drag = null;
     this.hover = null;
     this.spaceHeld = false;
+    this.showBlocks = true;
+    this.chain = null; // active Line-tool anchor chain
+    this.viewListeners = [];
 
     new ResizeObserver(() => this.resize()).observe(canvas);
     canvas.addEventListener('pointerdown', (e) => this.pointerDown(e));
@@ -50,6 +54,7 @@ export class PitchEditor {
     canvas.addEventListener('pointerleave', () => { this.hover = null; this.onHover?.(null); this.draw(); });
     canvas.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('dblclick', () => this.endChain());
     window.addEventListener('keydown', (e) => { if (e.code === 'Space' && e.target === canvas) { this.spaceHeld = true; e.preventDefault(); } });
     window.addEventListener('keyup', (e) => { if (e.code === 'Space') this.spaceHeld = false; });
     matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => this.draw());
@@ -59,6 +64,7 @@ export class PitchEditor {
   // ---------- data ----------
   setData({ t0, hopSec, midi, target, autoTarget, corrected, duration }) {
     this.data = { t0, hopSec, midi, target, autoTarget, corrected };
+    this.chain = null;
     this.duration = duration;
     this.undoStack = [];
     this.redoStack = [];
@@ -68,9 +74,23 @@ export class PitchEditor {
   setScale(pcs) { this.pcs = pcs; this.draw(); }
   setTolerance(c) { this.toleranceCents = c; this.draw(); }
   setPlayhead(t) { this.playhead = t; this.draw(); }
-  setTool(t) { this.tool = t; this.canvas.dataset.tool = t; }
+  setTool(t) {
+    if (t !== 'line') this.endChain();
+    this.tool = t;
+    this.canvas.dataset.tool = t;
+  }
+  setShowBlocks(on) { this.showBlocks = on; this.draw(); }
+  onViewChange(fn) { this.viewListeners.push(fn); }
+
+  /** Finish the current Line-tool chain (Enter, Esc, double-click or tool change). */
+  endChain() {
+    if (!this.chain) return;
+    this.chain = null;
+    this.draw();
+  }
 
   replaceTargets(target, autoTarget) {
+    this.chain = null;
     this.pushUndo();
     this.data.target = target;
     if (autoTarget) this.data.autoTarget = autoTarget;
@@ -84,6 +104,7 @@ export class PitchEditor {
   }
   undo() {
     if (!this.data || !this.undoStack.length) return false;
+    this.chain = null;
     this.redoStack.push(this.data.target);
     this.data.target = this.undoStack.pop();
     this.onEdit?.(this.data.target);
@@ -91,6 +112,7 @@ export class PitchEditor {
   }
   redo() {
     if (!this.data || !this.redoStack.length) return false;
+    this.chain = null;
     this.undoStack.push(this.data.target);
     this.data.target = this.redoStack.pop();
     this.onEdit?.(this.data.target);
@@ -174,7 +196,7 @@ export class PitchEditor {
   }
 
   pointerDown(e) {
-    this.canvas.focus();
+    this.canvas.focus({ preventScroll: true });
     const { x, y } = this.localPos(e);
     this.canvas.setPointerCapture(e.pointerId);
     if (y < RULER) { this.drag = { kind: 'seek' }; this.onSeek?.(clamp(this.xt(x), 0, this.duration)); return; }
@@ -185,6 +207,8 @@ export class PitchEditor {
     if (!this.data) return;
     const t = this.xt(x), m = this.ym(y);
     const i = this.timeFrame(t);
+
+    if (this.tool === 'line') { this.lineDown(x, y); return; }
 
     if (this.tool === 'note') {
       const seg = this.segmentAt(i);
@@ -223,6 +247,13 @@ export class PitchEditor {
     const t = this.xt(x), m = this.ym(y);
     const i = this.timeFrame(t);
     if (d.kind === 'note') { this.applyNote(d.seg, Math.round(m)); return; }
+    if (d.kind === 'anchor') {
+      const a = this.chain.anchors[d.k];
+      a.t = clamp(t, 0, this.duration);
+      a.m = this.snap ? Math.round(m) : m;
+      this.applyChain();
+      return;
+    }
     if (d.kind === 'paint') {
       this.paint(d.lastI, d.lastM, i, m);
       d.lastI = i; d.lastM = m;
@@ -233,7 +264,7 @@ export class PitchEditor {
     if (this.canvas.hasPointerCapture?.(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
     const d = this.drag;
     this.drag = null;
-    if (d && (d.kind === 'paint' || d.kind === 'note')) this.onEdit?.(this.data.target);
+    if (d && (d.kind === 'paint' || d.kind === 'note' || d.kind === 'anchor')) this.onEdit?.(this.data.target);
   }
 
   wheel(e) {
@@ -248,6 +279,46 @@ export class PitchEditor {
       const dy = e.shiftKey ? 0 : e.deltaY;
       this.pan((dx / (this.w - GUTTER)) * (v.t1 - v.t0), (-dy / (this.h - RULER)) * (v.m1 - v.m0) * 0.5);
     }
+  }
+
+  // ---------- Line tool: dots joined by straight pitch lines ----------
+  lineDown(x, y) {
+    if (!this.chain) this.chain = { base: this.data.target.slice(), anchors: [] };
+    this.pushUndo();
+    const hit = this.anchorHit(x, y);
+    if (hit >= 0) { this.drag = { kind: 'anchor', k: hit }; return; }
+    const m = this.ym(y);
+    this.chain.anchors.push({ t: this.xt(x), m: this.snap ? Math.round(m) : m });
+    this.drag = { kind: 'anchor', k: this.chain.anchors.length - 1 };
+    this.applyChain();
+  }
+
+  anchorHit(x, y) {
+    if (!this.chain) return -1;
+    const as = this.chain.anchors;
+    for (let k = as.length - 1; k >= 0; k--) {
+      if (Math.hypot(this.tx(as[k].t) - x, this.my(as[k].m) - y) <= 9) return k;
+    }
+    return -1;
+  }
+
+  /** Re-apply every segment of the chain on top of the targets it started from. */
+  applyChain() {
+    const { midi, target } = this.data;
+    const { base, anchors } = this.chain;
+    target.set(base);
+    for (let k = 1; k < anchors.length; k++) {
+      let a = anchors[k - 1], b = anchors[k];
+      if (a.t > b.t) [a, b] = [b, a];
+      const i0 = this.timeFrame(a.t), i1 = this.timeFrame(b.t);
+      for (let j = i0; j <= i1; j++) {
+        if (Number.isNaN(midi[j])) continue;
+        const f = i1 === i0 ? 0 : (j - i0) / (i1 - i0);
+        target[j] = a.m + (b.m - a.m) * f;
+      }
+    }
+    this.onLiveEdit?.(target);
+    this.draw();
   }
 
   segmentAt(i) {
@@ -295,6 +366,7 @@ export class PitchEditor {
 
   render() {
     const g = this.ctx, w = this.w, h = this.h, v = this.view;
+    for (const fn of this.viewListeners) fn(v);
     if (!w || !h) return;
     const col = {
       bg: css('--editor-bg'), row: css('--editor-row'), rowScale: css('--editor-row-scale'),
@@ -323,6 +395,7 @@ export class PitchEditor {
     for (let t = Math.ceil(v.t0 / step) * step; t <= v.t1; t += step) g.fillRect(Math.round(this.tx(t)), RULER, 1, h - RULER);
 
     if (this.data) this.renderData(g, col, rowH);
+    if (this.chain) this.renderChain(g, col);
 
     // Playhead
     const px = this.tx(this.playhead);
@@ -365,11 +438,30 @@ export class PitchEditor {
       g.strokeStyle = col.text; g.globalAlpha = 0.4; g.setLineDash([3, 3]);
       g.beginPath(); g.moveTo(GUTTER, y); g.lineTo(w, y); g.moveTo(x, RULER); g.lineTo(x, h); g.stroke();
       g.setLineDash([]); g.globalAlpha = 1;
-      if (this.tool === 'note' || this.tool === 'draw') {
+      if (this.tool === 'note' || this.tool === 'draw' || this.tool === 'line') {
         const snapped = this.snap || this.tool === 'note' ? Math.round(m) : m;
         g.fillStyle = col.accent;
         g.beginPath(); g.arc(x, this.my(snapped), 4, 0, Math.PI * 2); g.fill();
       }
+    }
+  }
+
+  renderChain(g, col) {
+    const as = this.chain.anchors;
+    g.strokeStyle = col.accent; g.lineWidth = 2;
+    g.beginPath();
+    as.forEach((a, k) => (k ? g.lineTo(this.tx(a.t), this.my(a.m)) : g.moveTo(this.tx(a.t), this.my(a.m))));
+    g.stroke();
+    if (this.hover && !this.drag && as.length && this.tool === 'line') {
+      const last = as[as.length - 1];
+      const m = this.snap ? Math.round(this.hover.m) : this.hover.m;
+      g.setLineDash([4, 4]); g.globalAlpha = 0.6;
+      g.beginPath(); g.moveTo(this.tx(last.t), this.my(last.m)); g.lineTo(this.hover.x, this.my(m)); g.stroke();
+      g.setLineDash([]); g.globalAlpha = 1;
+    }
+    for (const a of as) {
+      g.beginPath(); g.arc(this.tx(a.t), this.my(a.m), 5, 0, Math.PI * 2);
+      g.fillStyle = col.bg; g.fill(); g.lineWidth = 2; g.strokeStyle = col.accent; g.stroke();
     }
   }
 
@@ -383,16 +475,16 @@ export class PitchEditor {
 
     // Target note blocks
     const blockH = Math.max(4, rowH * 0.72);
-    for (const s of segmentsFrom(target)) {
+    for (const s of this.showBlocks ? segmentsFrom(target) : []) {
       if (s.end < iA || s.start > iB) continue;
       const x0 = this.tx(this.frameTime(s.start) - this.data.hopSec / 2);
       const x1 = this.tx(this.frameTime(s.end - 1) + this.data.hopSec / 2);
       let sum = 0;
       for (let j = s.start; j < s.end; j++) sum += target[j];
       const y = this.my(sum / (s.end - s.start));
-      g.fillStyle = col.accent; g.globalAlpha = 0.28;
+      g.fillStyle = col.accent; g.globalAlpha = 0.16;
       roundRect(g, x0, y - blockH / 2, Math.max(2, x1 - x0), blockH, Math.min(4, blockH / 2)); g.fill();
-      g.globalAlpha = 0.9; g.strokeStyle = col.accent; g.lineWidth = 1; g.stroke();
+      g.globalAlpha = 0.45; g.strokeStyle = col.accent; g.lineWidth = 1; g.stroke();
       g.globalAlpha = 1;
       if (x1 - x0 > 34 && blockH > 11) {
         g.fillStyle = col.accent; g.font = '10px system-ui, sans-serif'; g.textBaseline = 'middle';
@@ -415,7 +507,7 @@ export class PitchEditor {
 
     // Tuned result
     if (corrected) {
-      g.strokeStyle = col.tuned; g.lineWidth = 1.5; g.beginPath();
+      g.strokeStyle = col.tuned; g.lineWidth = 2; g.lineJoin = 'round'; g.beginPath();
       let pen = false;
       for (let i = iA; i <= iB; i += stride) {
         const c = corrected[i];

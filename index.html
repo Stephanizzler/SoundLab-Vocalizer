@@ -114,12 +114,14 @@
       <div class="toolbar" role="toolbar" aria-label="Editor tools">
         <div class="seg" id="tools">
           <button data-tool="note" class="active" title="Note (N): click where a note should be, or drag a note block up/down">◆ Note</button>
+          <button data-tool="line" title="Line (L): click to place dots; the pitch follows straight lines between them. Drag a dot to move it. Enter/Esc/double-click to finish">⟋ Line</button>
           <button data-tool="draw" title="Draw (D): paint the pitch line by hand">✎ Draw</button>
           <button data-tool="bypass" title="Bypass (B): leave these parts untouched">⌀ Bypass</button>
           <button data-tool="restore" title="Restore (R): back to auto-tune">↺ Restore</button>
           <button data-tool="pan" title="Pan (H): drag to move around">✋ Pan</button>
         </div>
         <label class="check"><input type="checkbox" id="snap" checked /> Snap to notes</label>
+        <label class="check"><input type="checkbox" id="showBlocks" checked /> Note blocks</label>
         <div class="seg">
           <button id="undoBtn" title="Undo (Ctrl+Z)">↶</button>
           <button id="redoBtn" title="Redo (Ctrl+Shift+Z)">↷</button>
@@ -129,19 +131,21 @@
           <button id="zoomFit" title="Fit whole take (0)">Fit</button>
           <button id="zoomIn" title="Zoom in (+)">+</button>
         </div>
-        <span class="readout mono" id="readout"></span>
       </div>
 
       <div class="editor-wrap">
         <canvas id="editor" tabindex="0" aria-label="Pitch editor"></canvas>
+        <span class="readout mono" id="readout" aria-live="off"></span>
         <div class="editor-empty" id="editorEmpty">Record or import a vocal to see its pitch here.</div>
       </div>
+      <div class="overview-wrap"><canvas id="overview" aria-label="Waveform overview: drag to move around"></canvas></div>
       <div class="legend">
         <span><i class="sw good"></i>in tune</span>
         <span><i class="sw warn"></i>slightly off</span>
         <span><i class="sw bad"></i>off-key</span>
         <span><i class="sw block"></i>target note</span>
         <span><i class="sw line"></i>tuned result</span>
+        <span><i class="sw wave"></i>waveform (drag to navigate)</span>
         <span class="hint">Scroll to move · Ctrl/⌘+scroll to zoom time · Alt+scroll to zoom pitch · Space+drag to pan</span>
       </div>
 
