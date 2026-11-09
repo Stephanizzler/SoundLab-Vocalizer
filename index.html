@@ -145,6 +145,29 @@
         </div>
         <div class="tune-stats" id="tuneStats" hidden></div>
         <div class="controls-row">
+          <span class="label">Style</span>
+          <div class="seg" id="tuneStyles">
+            <button data-style="natural">Natural</button>
+            <button data-style="pop">Pop polish</button>
+            <button data-style="hard">Hard tune</button>
+          </div>
+          <span class="chip" id="styleCustom" hidden>Custom</span>
+        </div>
+        <div class="tune-params">
+          <label class="tparam" title="How fast notes are pulled into tune. 0 ms = instant, robotic.">Retune speed
+            <input type="range" id="retune" min="0" max="200" step="1" value="20" /><output></output></label>
+          <label class="tparam" title="Long notes are corrected more gently than short ones, so held notes keep their life.">Humanize
+            <input type="range" id="humanize" min="0" max="1" step="0.05" value="0.35" /><output></output></label>
+          <label class="tparam" title="Leaves deliberate scoops and bends alone. The further from the note, the less it's corrected.">Keep bends
+            <input type="range" id="keepBends" min="0" max="1" step="0.05" value="0.25" /><output></output></label>
+          <label class="tparam" title="0% = flat, 100% = vibrato as you sang it, 200% = deeper.">Vibrato
+            <input type="range" id="vibrato" min="0" max="2" step="0.05" value="0.85" /><output></output></label>
+          <label class="tparam" title="How much of the distance to the note is corrected.">Amount
+            <input type="range" id="amount" min="0" max="1" step="0.05" value="1" /><output></output></label>
+          <label class="tparam" title="How far off a note can be before it's marked amber or red on the graph.">Off-key tolerance
+            <input type="range" id="tolerance" min="5" max="50" step="1" value="20" /><output></output></label>
+        </div>
+        <div class="controls-row scale-row">
           <label>Key <select id="keyTonic"></select></label>
           <label>Scale
             <select id="keyMode">
@@ -153,19 +176,19 @@
               <option value="chromatic">Chromatic</option>
             </select>
           </label>
-          <label class="slider">Retune speed
-            <input type="range" id="retune" min="0" max="200" step="1" value="25" />
-            <output>25 ms</output>
-          </label>
-          <label class="slider">Amount
-            <input type="range" id="amount" min="0" max="1" step="0.05" value="1" />
-            <output>100%</output>
-          </label>
-          <label class="slider">Off-key tolerance
-            <input type="range" id="tolerance" min="5" max="50" step="1" value="20" />
-            <output>±20¢</output>
-          </label>
+          <div class="scale-notes" id="scaleNotes" title="Click notes to remove them from (or add them to) the scale"></div>
+          <label class="btn ghost file-btn" title="Use a MIDI melody as the target notes">🎹 MIDI melody
+            <input type="file" id="midiFile" accept=".mid,.midi,audio/midi" /></label>
           <button class="btn ghost" id="reautoBtn" title="Discard edits and re-run auto-tune">Reset to auto</button>
+        </div>
+        <div class="note-inspector" id="noteInspector" hidden>
+          <b id="niTitle">Selected note</b>
+          <label class="slider">Correction
+            <input type="range" id="niAmount" min="0" max="1" step="0.05" value="1" /><output></output></label>
+          <label class="slider">Vibrato
+            <input type="range" id="niVibrato" min="0" max="2" step="0.05" value="1" /><output></output></label>
+          <button class="btn ghost" id="niReset">Use global settings</button>
+          <button class="btn ghost" id="niClose" aria-label="Close">✕</button>
         </div>
         <div class="toolbar" role="toolbar" aria-label="Editor tools">
           <div class="seg" id="tools">

@@ -2,8 +2,9 @@ import { removeVocals, isEffectivelyMono } from './dsp/vocal-remover.js';
 import { detectKey, detectTempo, NOTE_NAMES } from './dsp/key-detect.js';
 import { detectPitch } from './dsp/pitch-detect.js';
 import {
-  pitchToMidi, computeTargets, applyRetune, scalePitchClasses, noteName, segmentsFrom,
+  pitchToMidi, computeTargets, correctPitch, TUNE_STYLES, scalePitchClasses, noteName, segmentsFrom,
 } from './dsp/autotune.js';
+import { parseMidi, targetsFromMidi } from './dsp/midi.js';
 import { recommendHarmony, VOICES, INTERVALS } from './dsp/harmony.js';
 import { encodeWav } from './dsp/wav.js';
 import { toMono } from './dsp/util.js';
@@ -35,6 +36,10 @@ const S = {
   tuneVersion: 0,
   fx: clone(DEFAULT_FX),
   harmRec: null,
+  pcsOverride: null, // custom scale from the note toggles
+  midiNotes: null, // MIDI melody used as targets
+  noteAmount: null, // per-frame overrides from the note inspector (NaN = global)
+  noteVibrato: null,
   bus: null, // { L, R } processed vocal from the effects chain
   ab: 'fx',
   latencyTouched: false,
@@ -92,10 +97,12 @@ function enableStep(name) { document.querySelector(`.step[data-goto="${name}"]`)
 document.querySelectorAll('.step').forEach((b) => b.addEventListener('click', () => { if (!b.disabled) showScreen(b.dataset.goto); }));
 
 // ================================================================ sliders with outputs
+let syncing = false; // true while the app (not the user) moves a control
 function setSlider(id, value) {
   const el = $(id);
   el.value = value;
-  el.dispatchEvent(new Event('input'));
+  syncing = true;
+  try { el.dispatchEvent(new Event('input')); } finally { syncing = false; }
 }
 const pct = (v) => `${Math.round(v * 100)}%`;
 const FMT = {
@@ -104,6 +111,11 @@ const FMT = {
   retune: (v) => (Number(v) === 0 ? 'robot' : `${v} ms`),
   tolerance: (v) => `±${v}¢`,
   amount: pct,
+  humanize: pct,
+  keepBends: (v) => (Number(v) === 0 ? 'off' : pct(v)),
+  vibrato: pct,
+  niAmount: pct,
+  niVibrato: pct,
   harmMix: pct,
   bounceMusic: pct,
   bounceVocal: pct,
@@ -417,6 +429,8 @@ async function loadVocal(samples) {
     S.pitch = await busy('Listening to your vocal…', (p) => detectPitch(samples, sr, { onProgress: p }));
   } catch { return; }
   S.midi = pitchToMidi(S.pitch.f0);
+  S.noteAmount = new Float32Array(S.midi.length).fill(NaN);
+  S.noteVibrato = new Float32Array(S.midi.length).fill(NaN);
   S.autoTarget = autoTargets();
   S.target = S.autoTarget.slice();
   S.fx.autotune.on = false;
@@ -444,17 +458,32 @@ async function loadVocal(samples) {
   requestRender(0);
   enableStep('studio');
   showScreen('studio');
+  player.offset = 0;
+  updateTime(0);
   selectTab('autotune');
   status('Got it! Press "Auto-tune the track" to tune your vocal.');
 }
 
+function scalePcs() { return S.pcsOverride || scalePitchClasses(S.key.tonic, S.key.mode); }
 function autoTargets() {
   const smoothFrames = Math.round(0.2 / S.pitch.hopSec);
-  return computeTargets(S.midi, scalePitchClasses(S.key.tonic, S.key.mode), { smoothFrames });
+  const auto = computeTargets(S.midi, scalePcs(), { smoothFrames });
+  return S.midiNotes ? targetsFromMidi(S.midiNotes, S.midi, S.pitch.t0, S.pitch.hopSec, auto) : auto;
+}
+function tuneOpts() {
+  return {
+    retuneMs: Number($('retune').value),
+    amount: Number($('amount').value),
+    humanize: Number($('humanize').value),
+    keepBends: Number($('keepBends').value),
+    vibrato: Number($('vibrato').value),
+    noteAmount: S.noteAmount,
+    noteVibrato: S.noteVibrato,
+  };
 }
 function recomputeCorrected(render = true) {
   if (!S.midi) return;
-  S.corrected = applyRetune(S.midi, S.target, S.pitch.hopSec, Number($('retune').value), Number($('amount').value));
+  S.corrected = correctPitch(S.midi, S.target, S.pitch.hopSec, tuneOpts());
   S.tuneVersion++;
   editor.setCorrected(S.corrected);
   if (render && S.fx.autotune.on) requestRender();
@@ -552,10 +581,32 @@ for (const [i, n] of NOTE_NAMES.entries()) $('keyTonic').add(new Option(n, i));
 function showKey() {
   $('keyTonic').value = S.key.tonic;
   $('keyMode').value = S.key.mode;
-  editor.setScale(scalePitchClasses(S.key.tonic, S.key.mode));
+  editor.setScale(scalePcs());
+  renderScaleNotes();
+}
+function renderScaleNotes() {
+  const wrap = $('scaleNotes');
+  const pcs = scalePcs();
+  wrap.innerHTML = '';
+  for (let k = 0; k < 12; k++) {
+    const pc = (S.key.tonic + k) % 12;
+    const b = document.createElement('button');
+    b.textContent = NOTE_NAMES[pc];
+    b.className = `${pcs.includes(pc) ? 'on' : ''} ${NOTE_NAMES[pc].includes('#') ? 'black' : ''}`;
+    b.title = pcs.includes(pc) ? `Remove ${NOTE_NAMES[pc]} from the scale` : `Add ${NOTE_NAMES[pc]} to the scale`;
+    b.addEventListener('click', () => {
+      const cur = new Set(scalePcs());
+      if (cur.has(pc)) { if (cur.size > 1) cur.delete(pc); } else cur.add(pc);
+      S.pcsOverride = [...cur].sort((x, y) => x - y);
+      showKey();
+      if (S.midi) { retarget(); status(`Scale notes: ${S.pcsOverride.map((p) => NOTE_NAMES[p]).join(' ')}`); }
+    });
+    wrap.append(b);
+  }
 }
 function onKeyChanged() {
   S.key = { tonic: Number($('keyTonic').value), mode: $('keyMode').value };
+  S.pcsOverride = null;
   showKey();
   renderTrackChips();
   if (S.midi) {
@@ -619,14 +670,83 @@ function showTuneStats() {
   status('Auto-tune applied. Press play to hear it.');
 }
 
-for (const id of ['retune', 'amount']) $(id).addEventListener('input', () => recomputeCorrected());
+// Correction style + parameters
+function setStyle(name) {
+  const st = TUNE_STYLES[name];
+  for (const [id, key] of [['retune', 'retuneMs'], ['humanize', 'humanize'], ['keepBends', 'keepBends'], ['vibrato', 'vibrato'], ['amount', 'amount']]) setSlider(id, st[key]);
+  markStyle(name);
+  recomputeCorrected();
+}
+function markStyle(name) {
+  document.querySelectorAll('[data-style]').forEach((b) => b.classList.toggle('active', b.dataset.style === name));
+  $('styleCustom').hidden = !!name;
+}
+document.querySelectorAll('[data-style]').forEach((b) => b.addEventListener('click', () => setStyle(b.dataset.style)));
+markStyle('pop');
+for (const id of ['retune', 'amount', 'humanize', 'keepBends', 'vibrato']) {
+  $(id).addEventListener('input', () => { if (!syncing) markStyle(null); recomputeCorrected(); });
+}
+
+// MIDI melody -> target notes
+$('midiFile').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f || !S.midi) { if (f) status('Record a vocal first.', { error: true }); return; }
+  try {
+    const notes = parseMidi(await f.arrayBuffer());
+    if (!notes.length) throw new Error('no notes found');
+    S.midiNotes = notes;
+  } catch (err) {
+    status(`Couldn't read that MIDI file: ${err.message}`, { error: true });
+    return;
+  }
+  if (editor.applied) retarget(); else applyTune();
+  status(`Using ${S.midiNotes.length} notes from ${f.name} as targets. "Reset to auto" goes back to the key.`);
+});
+
+// Note inspector: per-note correction and vibrato
+let inspected = null;
+function inspect(seg) {
+  inspected = seg;
+  $('noteInspector').hidden = !seg;
+  if (!seg) return;
+  const note = Math.round(S.target[seg.start]);
+  $('niTitle').textContent = `${noteName(note)} · ${fmtTime(S.pitch.t0 + seg.start * S.pitch.hopSec, 2)}–${fmtTime(S.pitch.t0 + seg.end * S.pitch.hopSec, 2)}`;
+  const a = S.noteAmount[seg.start], v = S.noteVibrato[seg.start];
+  setSlider('niAmount', Number.isNaN(a) ? Number($('amount').value) : a);
+  setSlider('niVibrato', Number.isNaN(v) ? Number($('vibrato').value) : v);
+}
+for (const [id, key] of [['niAmount', 'noteAmount'], ['niVibrato', 'noteVibrato']]) {
+  $(id).addEventListener('input', () => {
+    if (!inspected || syncing) return;
+    S[key].fill(Number($(id).value), inspected.start, inspected.end);
+    recomputeCorrected();
+  });
+}
+$('niReset').addEventListener('click', () => {
+  if (!inspected) return;
+  S.noteAmount.fill(NaN, inspected.start, inspected.end);
+  S.noteVibrato.fill(NaN, inspected.start, inspected.end);
+  inspect(inspected);
+  recomputeCorrected();
+});
+$('niClose').addEventListener('click', () => editor.select(null));
 $('tolerance').addEventListener('input', () => editor.setTolerance(Number($('tolerance').value)));
-$('reautoBtn').addEventListener('click', () => { if (S.midi) { retarget(); status('Back to automatic tuning (Undo restores your edits).'); } });
+$('reautoBtn').addEventListener('click', () => {
+  if (!S.midi) return;
+  S.midiNotes = null;
+  S.pcsOverride = null;
+  S.noteAmount.fill(NaN); S.noteVibrato.fill(NaN);
+  editor.select(null);
+  showKey();
+  retarget();
+  status('Back to automatic tuning in the song key (Undo restores your edits).');
+});
 
 const editor = new PitchEditor($('editor'), {
   onLiveEdit: (target) => {
     S.target = target;
-    S.corrected = applyRetune(S.midi, S.target, S.pitch.hopSec, Number($('retune').value), Number($('amount').value));
+    S.corrected = correctPitch(S.midi, S.target, S.pitch.hopSec, tuneOpts());
     editor.setCorrected(S.corrected);
   },
   onEdit: (target) => { S.target = target; recomputeCorrected(); },
@@ -635,6 +755,7 @@ const editor = new PitchEditor($('editor'), {
     if (player.playing && !player.previewing) playMix(t); else updateTime(t);
   },
   onNeedApply: () => status('Press "Auto-tune the track" first, then you can edit the corrections.'),
+  onSelect: (seg) => inspect(seg),
   onHover: (h) => {
     if (!h) { $('readout').textContent = ''; return; }
     const parts = [fmtTime(h.t, 2)];

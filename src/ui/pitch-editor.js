@@ -22,8 +22,10 @@ const css = (name) => getComputedStyle(document.documentElement).getPropertyValu
  * pitch), restore (back to auto-tune), pan.
  */
 export class PitchEditor {
-  constructor(canvas, { onEdit, onLiveEdit, onSeek, onHover, onNeedApply } = {}) {
+  constructor(canvas, { onEdit, onLiveEdit, onSeek, onHover, onNeedApply, onSelect } = {}) {
     this.onNeedApply = onNeedApply;
+    this.onSelect = onSelect;
+    this.selected = null;
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onEdit = onEdit;
@@ -67,6 +69,7 @@ export class PitchEditor {
   // ---------- data ----------
   setData({ t0, hopSec, midi, target, autoTarget, corrected, duration }) {
     this.data = { t0, hopSec, midi, target, autoTarget, corrected };
+    this.selected = null;
     this.chain = null;
     this.duration = duration;
     this.undoStack = [];
@@ -77,6 +80,12 @@ export class PitchEditor {
   setScale(pcs) { this.pcs = pcs; this.draw(); }
   setTolerance(c) { this.toleranceCents = c; this.draw(); }
   setPlayhead(t) { this.playhead = t; this.draw(); }
+  /** Select a note (frame range) for the note inspector; null clears. */
+  select(seg) {
+    this.selected = seg;
+    this.onSelect?.(seg);
+    this.draw();
+  }
   setApplied(on) { this.applied = on; if (!on) this.endChain(); this.draw(); }
   setReveal(t) { this.reveal = t; this.draw(); }
   setTool(t) {
@@ -218,6 +227,7 @@ export class PitchEditor {
 
     if (this.tool === 'note') {
       const seg = this.segmentAt(i);
+      this.select(seg);
       if (!seg) return;
       this.pushUndo();
       // Clicking a "dot" where the note should be moves the block there
@@ -504,6 +514,17 @@ export class PitchEditor {
         g.fillStyle = col.accent; g.font = '10px system-ui, sans-serif'; g.textBaseline = 'middle';
         g.fillText(noteName(s.note), x0 + 4, y);
       }
+    }
+
+    // Selected note (note inspector)
+    if (this.selected) {
+      const { start, end } = this.selected;
+      const x0 = this.tx(this.frameTime(start) - this.data.hopSec / 2);
+      const x1 = this.tx(this.frameTime(end - 1) + this.data.hopSec / 2);
+      g.fillStyle = col.fix; g.globalAlpha = 0.08; g.fillRect(x0, RULER, x1 - x0, this.h - RULER);
+      g.globalAlpha = 0.7; g.strokeStyle = col.fix; g.setLineDash([4, 4]); g.lineWidth = 1;
+      g.strokeRect(x0 + 0.5, RULER + 0.5, x1 - x0 - 1, this.h - RULER - 1);
+      g.setLineDash([]); g.globalAlpha = 1;
     }
 
     // Corrections: shade between what was sung and where it was moved to.

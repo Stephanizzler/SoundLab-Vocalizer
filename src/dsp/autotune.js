@@ -126,3 +126,96 @@ export function segmentsFrom(target) {
   }
   return segs;
 }
+
+/**
+ * Split pitch into a smooth line (note centre + slow drift) and the fast part
+ * (vibrato / wobble). Smoothing restarts at every target-note change so note
+ * transitions aren't smeared. Two box passes = triangular window, which
+ * removes typical 4.5–7 Hz vibrato well; the window shrinks symmetrically at
+ * note edges so slides and scoops aren't biased.
+ */
+export function smoothPitch(midi, target, hopSec, windowSec = 0.15) {
+  const n = midi.length;
+  const width = Math.max(3, Math.round(windowSec / hopSec));
+  const r = Math.floor(width / 2);
+  let cur = midi;
+  for (let pass = 0; pass < 2; pass++) {
+    const out = new Float32Array(n).fill(NaN);
+    let a = 0;
+    while (a < n) {
+      if (Number.isNaN(cur[a])) { a++; continue; }
+      const note = target && !Number.isNaN(target[a]) ? Math.round(target[a]) : null;
+      let b = a + 1;
+      while (
+        b < n && !Number.isNaN(cur[b]) && Math.abs(cur[b] - cur[b - 1]) < 1.2 &&
+        (target ? (Number.isNaN(target[b]) ? null : Math.round(target[b])) === note : true)
+      ) b++;
+      const prefix = new Float64Array(b - a + 1);
+      for (let i = a; i < b; i++) prefix[i - a + 1] = prefix[i - a] + cur[i];
+      for (let i = a; i < b; i++) {
+        // Symmetric window that shrinks at note edges (unbiased on slides).
+        const rr = Math.min(r, i - a, b - 1 - i);
+        out[i] = (prefix[i + rr + 1 - a] - prefix[i - rr - a]) / (2 * rr + 1);
+      }
+      a = b;
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+/**
+ * Natural pitch correction.
+ *
+ *  retuneMs   how fast the pitch is pulled to the target (0 = instant, robotic)
+ *  amount     0..1 how much of the distance to the target is corrected
+ *  humanize   0..1 sustained notes are retuned more slowly than short ones,
+ *             so long notes keep their life while quick notes stay tight
+ *  keepBends  0..1 leave deliberate expression alone: the further the sung
+ *             line is from the target, the less it's corrected (0 = off)
+ *  vibrato    0..2 vibrato depth in the output (0 = flat, 1 = as sung)
+ *  noteAmount / noteVibrato  optional per-frame overrides (NaN = use global)
+ *
+ * Correction acts on the smooth line; vibrato is added back on top.
+ */
+export function correctPitch(midi, target, hopSec, opts = {}) {
+  const {
+    retuneMs = 25, amount = 1, humanize = 0, keepBends = 0, vibrato = 1,
+    noteAmount = null, noteVibrato = null,
+  } = opts;
+  const n = midi.length;
+  const smooth = smoothPitch(midi, target, hopSec);
+  const out = new Float32Array(n).fill(NaN);
+  const th = keepBends > 0 ? 2 - 1.75 * keepBends : Infinity; // semitones
+  let delta = 0, active = false, prevNote = null, segStart = 0;
+  for (let i = 0; i < n; i++) {
+    const m = midi[i];
+    if (Number.isNaN(m)) { active = false; prevNote = null; continue; }
+    const t = target[i];
+    if (Number.isNaN(t)) { out[i] = m; active = false; prevNote = null; continue; }
+    const s = smooth[i];
+    const vib = m - s;
+    const note = Math.round(t);
+    if (note !== prevNote) { segStart = i; prevNote = note; }
+    const age = (i - segStart) * hopSec;
+    const dev = Math.abs(s - t);
+    const gate = dev <= th * 0.6 ? 1 : dev >= th ? 0 : (th - dev) / (th * 0.4);
+    const na = noteAmount && !Number.isNaN(noteAmount[i]) ? noteAmount[i] : amount;
+    const nv = noteVibrato && !Number.isNaN(noteVibrato[i]) ? noteVibrato[i] : vibrato;
+    const want = (t - s) * na * gate;
+    const ramp = Math.min(1, Math.max(0, (age - 0.15) / 0.5));
+    const tau = (retuneMs + humanize * 160 * ramp) / 1000;
+    const alpha = tau <= 0 ? 1 : 1 - Math.exp(-hopSec / tau);
+    if (!active) { delta = 0; active = true; }
+    delta += (want - delta) * alpha;
+    out[i] = s + delta + nv * vib;
+  }
+  return out;
+}
+
+/** Correction styles (like starting points in a pro tuner). */
+export const TUNE_STYLES = {
+  natural: { label: 'Natural', retuneMs: 50, humanize: 0.6, keepBends: 0.5, vibrato: 1, amount: 1 },
+  pop: { label: 'Pop polish', retuneMs: 20, humanize: 0.35, keepBends: 0.25, vibrato: 0.85, amount: 1 },
+  hard: { label: 'Hard tune', retuneMs: 0, humanize: 0, keepBends: 0, vibrato: 0, amount: 1 },
+};
