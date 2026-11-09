@@ -1,7 +1,7 @@
 // Effect defaults, presets and control definitions used by the studio UI.
 
 export const DEFAULT_FX = {
-  autotune: { on: false },
+  autotune: { on: false, engine: 'studio', formant: 1 },
   harmonizer: { on: false, mix: 0.8, layers: [] },
   vocoder: { on: false, preset: 'robot', wildness: 45, carrier: 'pitch', carrierOctave: 0, formantBias: 0, bands: 23, detune: 8, formantShift: 0, mix: 0.64, width: 0.5, noise: 0.5 },
   echo: { on: false, preset: 'quarter', sync: '1/4', timeMs: 375, feedback: 0.3, mix: 0.22, pingPong: false, highCut: 5000, lowCut: 200, spread: 0.3 },

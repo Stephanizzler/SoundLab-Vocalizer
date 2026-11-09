@@ -16,7 +16,7 @@ The key and tempo are detected for you.
 
 | Tab | What it does |
 | --- | --- |
-| **Auto-Tune** | Press **Auto-tune the track**. A scan line sweeps across the pitch graph and draws every correction in **cyan**, shaded between what you sang and where it was moved. You can fine-tune by hand afterwards (tools below). |
+| **Auto-Tune** | Press **Auto-tune the track**. A scan line sweeps across the pitch graph and draws every correction in **cyan**, shaded between what you sang and where it was moved. Then shape it with styles (Natural, Pop polish, Hard tune) and controls for retune speed, humanize, keep bends, vibrato, amount and formant. Click a note for its own correction and vibrato, toggle scale notes, or load a **MIDI melody** as the targets. Fine-tune by hand with the tools below. |
 | **Harmonizer** | 1–4 harmony layers made from your own voice. Each layer has its own **interval** (3rd/4th/5th/6th above or below, octaves, double, or ✨ *Smart*), **voice** (Natural, Female, Male, Deep bass, Bright, Choir), level, pan and feel. **Use recommended harmony** looks at where your melody sits and listens to the chord under each note to pick harmony notes that fit. |
 | **Vocoder** | Talking-synth presets (Subtle shimmer, Classic robot, Synth choir, Whisper, Drone, Alien, Monster), a **How wild?** macro from subtle to unhinged, and fine controls (synth voice, octave, bands, character, detune, consonants, width, mix). |
 | **Echo** | Slapback, quarter, dotted 8th, ping-pong, dub and long-tail presets, synced to the song tempo. Controls for repeats, level, tone, low cut and stereo spread. |
@@ -54,7 +54,9 @@ There are no dependencies and no build step. Any static HTTPS host works, for ex
 | Vocal removal | STFT center-channel extraction (bass and side-panned parts kept) | `src/dsp/vocal-remover.js` |
 | Key / tempo / chords | Krumhansl–Kessler key profiles; onset autocorrelation; per-note chroma | `src/dsp/key-detect.js` |
 | Pitch tracking | YIN, 10 ms hop | `src/dsp/pitch-detect.js` |
-| Auto-Tune | In-key targets on vibrato-smoothed pitch, retune glide, TD-PSOLA | `src/dsp/autotune.js`, `src/dsp/psola.js` |
+| Auto-Tune | In-key or MIDI targets; pitch split into smooth line + vibrato; retune / humanize / keep-bends correction on the smooth line, vibrato re-applied | `src/dsp/autotune.js`, `src/dsp/midi.js` |
+| Studio engine | Port of the WORLD vocoder (StoneMask, CheapTrick, D4C, synthesis): resynthesises changed phrases from the spectral envelope, keeps the original audio elsewhere | `src/dsp/world.js`, `src/dsp/studio-engine.js` |
+| Classic engine | TD-PSOLA (instant) | `src/dsp/psola.js` |
 | Harmonizer | Diatonic and chord-aware intervals, PSOLA with formant shifting for voice character | `src/dsp/harmony.js` |
 | Vocoder | Band-pass filter-bank channel vocoder with a polyBLEP synth carrier that follows your melody | `src/dsp/vocoder.js` |
 | Echo | Stereo feedback delay with filters in the loop, ping-pong | `src/dsp/echo.js` |
@@ -66,3 +68,7 @@ There are no dependencies and no build step. Any static HTTPS host works, for ex
 - DAW project files (`.als`, `.logicx`, `.flp`, …) can't be opened in a browser, so export a bounce instead.
 - Vocal removal uses the classic center-channel method. A machine-learning separator would be cleaner.
 - Tempo detection needs a clear beat, and you can type the BPM on the Echo tab.
+
+## Credits
+
+The Studio engine is a JavaScript port of the core of [WORLD](https://github.com/mmorise/World) by M. Morise (modified BSD license; the notice is kept in `src/dsp/world.js`).

@@ -156,7 +156,7 @@ test('full chain renders with every effect on and caches stages', async () => {
   const st = { fx, corrected: target, target, tuneVersion: 1, key: { tonic: 0, mode: 'major' }, bpm: 100 };
   const cache = {};
   const stages = [];
-  const r = await renderChain({ raw: x, sampleRate: SR, pitch, backing: null }, st, cache, { onStage: (s) => stages.push(s) });
+  const r = await renderChain({ raw: x, sampleRate: SR, pitch, backing: null }, st, cache, { onStage: (s) => { if (s !== 'analyzing') stages.push(s); } });
   assert.deepEqual(stages, ['tuned', 'harmonizer', 'vocoder', 'echo', 'reverb']);
   assert.ok(r.L.length > x.length && r.L.every(Number.isFinite) && rms(r.L) > 0.01);
   stages.length = 0;

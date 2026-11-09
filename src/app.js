@@ -114,6 +114,7 @@ const FMT = {
   humanize: pct,
   keepBends: (v) => (Number(v) === 0 ? 'off' : pct(v)),
   vibrato: pct,
+  formant: (v) => (Math.abs(v - 1) < 0.005 ? 'natural' : `${v > 1 ? '+' : ''}${(12 * Math.log2(v)).toFixed(1)} st`),
   niAmount: pct,
   niVibrato: pct,
   harmMix: pct,
@@ -500,15 +501,18 @@ const worker = new Worker(new URL('./engine/worker.js', import.meta.url), { type
 let renderId = 0;
 let renderTimer = 0;
 let pendingRender = false;
+let renderQueued = false; // a request is waiting for its debounce timer
 const renderWaiters = [];
-const STAGE_LABEL = { tuned: 'auto-tune', harmonizer: 'harmonies', vocoder: 'vocoder', echo: 'echo', reverb: 'reverb' };
+const STAGE_LABEL = { tuned: 'auto-tune', harmonizer: 'harmonies', vocoder: 'vocoder', echo: 'echo', reverb: 'reverb', analyzing: 'voice analysis' };
 
 function requestRender(delay = 300) {
   if (!S.vocalRaw) return;
   clearTimeout(renderTimer);
   setRenderChip('Waiting…', false);
   pendingRender = true;
+  renderQueued = true;
   renderTimer = setTimeout(() => {
+    renderQueued = false;
     renderId++;
     worker.postMessage({
       type: 'render',
@@ -522,14 +526,24 @@ function requestRender(delay = 300) {
 }
 worker.onmessage = (e) => {
   const m = e.data;
+  if (m.type === 'analysis') {
+    if (!pendingRender) setRenderChip(m.p < 1 ? `Preparing Studio engine ${Math.round(m.p * 100)}%…` : 'Up to date', m.p >= 1);
+    return;
+  }
   if (m.id !== renderId) return;
-  if (m.type === 'progress') setRenderChip(`Rendering ${STAGE_LABEL[m.stage] || m.stage}…`, false);
+  if (m.type === 'progress') {
+    const pctText = m.stage === 'analyzing' && m.p != null ? ` ${Math.round(m.p * 100)}%` : '';
+    setRenderChip(`Rendering ${STAGE_LABEL[m.stage] || m.stage}${pctText}…`, false);
+  }
   else if (m.type === 'error') { setRenderChip('Render failed', true); status(`Effects failed: ${m.message}`, { error: true }); }
   else if (m.type === 'done') {
     S.bus = { L: m.L, R: m.R };
-    pendingRender = false;
-    setRenderChip('Up to date', true);
-    while (renderWaiters.length) renderWaiters.shift()();
+    if (!renderQueued) {
+      // Only the latest request counts as "up to date".
+      pendingRender = false;
+      setRenderChip('Up to date', true);
+      while (renderWaiters.length) renderWaiters.shift()();
+    }
     if (S.ab === 'fx') restartIfPlaying();
   }
 };
@@ -682,6 +696,18 @@ function markStyle(name) {
   $('styleCustom').hidden = !!name;
 }
 document.querySelectorAll('[data-style]').forEach((b) => b.addEventListener('click', () => setStyle(b.dataset.style)));
+function markEngine() {
+  document.querySelectorAll('[data-engine]').forEach((b) => b.classList.toggle('active', b.dataset.engine === S.fx.autotune.engine));
+}
+document.querySelectorAll('[data-engine]').forEach((b) => b.addEventListener('click', () => {
+  S.fx.autotune.engine = b.dataset.engine;
+  markEngine();
+  requestRender(0);
+  status(b.dataset.engine === 'studio' ? 'Studio engine: cleanest sound, renders in the background.' : 'Classic engine: instant renders.');
+}));
+markEngine();
+$('formant').addEventListener('input', () => { S.fx.autotune.formant = Number($('formant').value); });
+$('formant').addEventListener('change', () => requestRender());
 markStyle('pop');
 for (const id of ['retune', 'amount', 'humanize', 'keepBends', 'vibrato']) {
   $(id).addEventListener('input', () => { if (!syncing) markStyle(null); recomputeCorrected(); });

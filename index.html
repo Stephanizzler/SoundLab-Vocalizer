@@ -152,6 +152,12 @@
             <button data-style="hard">Hard tune</button>
           </div>
           <span class="chip" id="styleCustom" hidden>Custom</span>
+          <span class="spacer"></span>
+          <span class="label">Engine</span>
+          <div class="seg" id="tuneEngine">
+            <button data-engine="studio" title="Re-synthesises the voice from its spectral envelope (WORLD vocoder). Cleanest sound, keeps the voice's character.">Studio</button>
+            <button data-engine="classic" title="Time-domain PSOLA. Instant, but grainier on big corrections.">Classic</button>
+          </div>
         </div>
         <div class="tune-params">
           <label class="tparam" title="How fast notes are pulled into tune. 0 ms = instant, robotic.">Retune speed
@@ -164,6 +170,8 @@
             <input type="range" id="vibrato" min="0" max="2" step="0.05" value="0.85" /><output></output></label>
           <label class="tparam" title="How much of the distance to the note is corrected.">Amount
             <input type="range" id="amount" min="0" max="1" step="0.05" value="1" /><output></output></label>
+          <label class="tparam" title="Moves the voice's formants: lower sounds bigger/deeper, higher sounds smaller/brighter. Natural = 0.">Formant
+            <input type="range" id="formant" min="0.8" max="1.25" step="0.01" value="1" /><output></output></label>
           <label class="tparam" title="How far off a note can be before it's marked amber or red on the graph.">Off-key tolerance
             <input type="range" id="tolerance" min="5" max="50" step="1" value="20" /><output></output></label>
         </div>

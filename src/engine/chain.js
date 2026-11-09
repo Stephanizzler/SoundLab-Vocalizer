@@ -1,4 +1,5 @@
 import { psola } from '../dsp/psola.js';
+import { studioAnalyze, studioRender } from '../dsp/studio-engine.js';
 import { renderHarmony } from '../dsp/harmony.js';
 import { vocode } from '../dsp/vocoder.js';
 import { echo, noteToMs } from '../dsp/echo.js';
@@ -8,6 +9,15 @@ import { pitchToMidi, scalePitchClasses } from '../dsp/autotune.js';
 import { tick } from '../dsp/util.js';
 
 export const STAGES = ['tuned', 'harmonizer', 'vocoder', 'echo', 'reverb'];
+
+/** One-time WORLD analysis of the take for the Studio engine (cached). */
+export function ensureStudioAnalysis(src, cache, onStage = () => {}) {
+  if (!cache.studio) {
+    onStage('analyzing', 0);
+    cache.studio = studioAnalyze(src.raw, src.sampleRate, src.pitch, { onProgress: (p) => onStage('analyzing', p) });
+  }
+  return cache.studio;
+}
 
 async function stage(cache, name, key, onStage, fn) {
   if (cache[name] && cache[name].key === key) return cache[name].value;
@@ -36,8 +46,18 @@ export async function renderChain(src, st, cache, { onStage = () => {}, aborted 
   const pcs = scalePitchClasses(st.key.tonic, mode);
   const base = fx.autotune.on ? st.corrected : midi;
 
-  let key = `t:${fx.autotune.on}:${st.tuneVersion}`;
-  const tuned = await stage(cache, 'tuned', key, onStage, () => (fx.autotune.on ? psola(raw, sr, pitch, st.corrected) : raw));
+  const at = fx.autotune;
+  const formant = at.formant ?? 1;
+  let key = `t:${at.on}:${at.engine}:${formant}:${st.tuneVersion}`;
+  const tuned = await stage(cache, 'tuned', key, onStage, () => {
+    if (!at.on) return raw;
+    if (at.engine === 'studio') {
+      ensureStudioAnalysis(src, cache, onStage);
+      if (!cache.studioPhrases) cache.studioPhrases = new Map();
+      return studioRender(cache.studio, raw, pitch, st.corrected, { formant, cache: cache.studioPhrases });
+    }
+    return psola(raw, sr, pitch, st.corrected, { formant });
+  });
   if (aborted()) return null;
 
   key += `|h:${JSON.stringify(fx.harmonizer)}:${st.key.tonic}${mode}`;
