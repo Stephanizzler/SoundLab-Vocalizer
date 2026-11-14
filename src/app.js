@@ -151,14 +151,30 @@ async function importMusic(file, kind) {
   S.songName = file.name.replace(/\.[^.]+$/, '');
   S.song = buf;
   S.sourceKind = kind;
+  S.separatedVocal = null;
   $('trackName').textContent = file.name;
   $('importResult').hidden = false;
-  $('removeRow').hidden = kind !== 'song';
-  $('previewOriginal').hidden = kind !== 'song';
-  if (kind === 'song') {
+  const separating = kind === 'song' || kind === 'vocalfx';
+  $('removeRow').hidden = !separating;
+  $('previewOriginal').hidden = !separating;
+  $('previewVocal').hidden = kind !== 'vocalfx';
+  $('separateHint').hidden = kind !== 'vocalfx';
+  $('removeLabel').textContent = kind === 'vocalfx' ? 'Vocal separation' : 'Vocal removal';
+  $('removeBtn').textContent = kind === 'vocalfx' ? 'Redo separation' : 'Redo removal';
+  $('previewMusic').textContent = kind === 'vocalfx' ? '▶ Music only' : '▶ Music for singing';
+  $('toRecord').textContent = kind === 'vocalfx' ? 'Open the studio →' : 'Next: record your vocal →';
+  // For a finished song, full separation and the original balance (music at 100%),
+  // so the untouched vocal + music play back exactly like the original.
+  const level = kind === 'vocalfx' ? 1 : 0.8;
+  setSlider('instGain', level);
+  setSlider('bounceMusic', level);
+  if (kind === 'vocalfx') setSlider('removeStrength', 1);
+  if (separating) {
     const ch = channelsOf(buf);
     if (ch.length < 2 || isEffectivelyMono(ch[0], ch[1])) {
-      status('This song is mono, so vocal removal won\'t work well. A stereo file or a DAW bounce works best.', { error: true });
+      status(kind === 'vocalfx'
+        ? 'This song is mono, so the vocal can\'t be separated from the music. A stereo file works best.'
+        : 'This song is mono, so vocal removal won\'t work well. A stereo file or a DAW bounce works best.', { error: true });
     }
     await runVocalRemoval();
   } else {
@@ -173,11 +189,25 @@ async function runVocalRemoval() {
   const ch = channelsOf(S.song);
   const [L, R] = ch.length > 1 ? [ch[0], ch[1]] : [ch[0], ch[0]];
   const strength = Number($('removeStrength').value);
+  const fx = S.sourceKind === 'vocalfx';
   try {
-    const out = await busy('Removing the vocals…', (p) => removeVocals(L, R, S.song.sampleRate, { strength, onProgress: p }));
+    const out = await busy(fx ? 'Separating the vocal from the music…' : 'Removing the vocals…', (p) => removeVocals(L, R, S.song.sampleRate, { strength, onProgress: p }));
+    if (fx) {
+      // The vocal is what was taken out of the centre (as mono). The music is
+      // then defined as original minus that vocal, so music + untouched vocal
+      // reproduces the original song exactly.
+      const vocal = new Float32Array(L.length);
+      for (let i = 0; i < L.length; i++) vocal[i] = ((L[i] - out[0][i]) + (R[i] - out[1][i])) * 0.5;
+      for (let i = 0; i < L.length; i++) { out[0][i] = L[i] - vocal[i]; out[1][i] = R[i] - vocal[i]; }
+      S.separatedVocal = vocal;
+    }
     S.instrumental = makeBuffer(out);
   } catch { return; }
   await analyzeMusic();
+  if (fx) {
+    await loadVocal(S.separatedVocal);
+    status('Vocal separated! Pick any tab to add effects. "Dry" plays the original song.');
+  }
 }
 
 async function analyzeMusic() {
@@ -194,13 +224,13 @@ async function analyzeMusic() {
   renderTrackChips();
   overviewLayers();
   enableStep('record');
-  status(`Ready: ${keyName()} at ${S.bpm} BPM. Preview it, then record your vocal.`);
+  if (S.sourceKind !== 'vocalfx') status(`Ready: ${keyName()} at ${S.bpm} BPM. Preview it, then record your vocal.`);
 }
 
 function keyName() { return S.key.mode === 'chromatic' ? 'Chromatic' : `${NOTE_NAMES[S.key.tonic]} ${S.key.mode}`; }
 function renderTrackChips() {
   const chips = [
-    S.sourceKind === 'song' ? 'Vocals removed' : 'Project bounce',
+    { song: 'Vocals removed', vocalfx: 'Vocal separated', project: 'Project bounce' }[S.sourceKind],
     fmtTime(S.instrumental.duration),
     `Key ${keyName()}`,
     `${S.bpm} BPM`,
@@ -218,14 +248,15 @@ function renderTrackChips() {
 $('songFile').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importMusic(f, 'song'); });
 $('stemFile').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importMusic(f, 'project'); });
 $('removeBtn').addEventListener('click', runVocalRemoval);
-$('toRecord').addEventListener('click', () => showScreen('record'));
+$('mixFile').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importMusic(f, 'vocalfx'); });
+$('toRecord').addEventListener('click', () => showScreen(S.sourceKind === 'vocalfx' && S.vocalRaw ? 'studio' : 'record'));
 for (const card of document.querySelectorAll('.choice')) {
   card.addEventListener('dragover', (e) => { e.preventDefault(); card.classList.add('dragover'); });
   card.addEventListener('dragleave', () => card.classList.remove('dragover'));
   card.addEventListener('drop', (e) => {
     e.preventDefault(); card.classList.remove('dragover');
     const f = e.dataTransfer.files[0];
-    if (f) importMusic(f, card.querySelector('input').id === 'songFile' ? 'song' : 'project');
+    if (f) importMusic(f, { songFile: 'song', mixFile: 'vocalfx', stemFile: 'project' }[card.querySelector('input').id]);
   });
 }
 
@@ -304,7 +335,10 @@ for (const b of document.querySelectorAll('[data-preview]')) {
     const wasThis = player.playing && player.previewing === b.dataset.preview;
     stopPlayback();
     if (wasThis) return;
-    const buffer = b.dataset.preview === 'original' ? S.song : S.instrumental;
+    const buffer = b.dataset.preview === 'original' ? S.song
+      : b.dataset.preview === 'vocal' ? (S.separatedVocal && bufferFor(S.separatedVocal))
+        : S.instrumental;
+    if (!buffer) return;
     player.onEnd = null;
     startBuffers([{ buffer, gain: 1 }], 0, audioCtx().currentTime + 0.05);
     player.previewing = b.dataset.preview;

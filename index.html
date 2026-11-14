@@ -31,7 +31,7 @@
     <section class="screen" id="screen-import">
       <div class="hero">
         <h1>Sing it. Tune it. <span class="grad">Own it.</span></h1>
-        <p>Start with the music you want to sing over.</p>
+        <p>Start with the music you want to sing over, or a finished song whose vocal you want to polish.</p>
       </div>
       <div class="choices">
         <label class="choice">
@@ -52,8 +52,17 @@
           <p>Upload any song and we'll strip out the lead vocal so you can sing it yourself.</p>
           <span class="btn">Upload song</span>
         </label>
+        <label class="choice">
+          <input type="file" id="mixFile" accept="audio/*,.wav,.aif,.aiff,.mp3,.m4a,.aac,.flac,.ogg" />
+          <div class="choice-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><rect x="17" y="5" width="14" height="24" rx="7" fill="none" stroke="currentColor" stroke-width="3"/><path d="M10 23a14 14 0 0 0 28 0M24 37v6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M39 6l1.6 3.4L44 11l-3.4 1.6L39 16l-1.6-3.4L34 11l3.4-1.6z" fill="currentColor"/></svg>
+          </div>
+          <h2>A song with vocals</h2>
+          <p>Already sung? Upload the finished song and add effects to the vocal that's in it: tune, harmonize, echo, reverb.</p>
+          <span class="btn">Upload song with vocals</span>
+        </label>
       </div>
-      <p class="fine">You can also drag a file onto either card. Everything stays on your device.</p>
+      <p class="fine">You can also drag a file onto any card. Everything stays on your device.</p>
 
       <div class="card import-result" id="importResult" hidden>
         <div class="track-head">
@@ -64,15 +73,17 @@
           </div>
         </div>
         <div class="row" id="removeRow" hidden>
-          <label class="slider">Vocal removal
+          <label class="slider"><span id="removeLabel">Vocal removal</span>
             <input type="range" id="removeStrength" min="0" max="1" step="0.05" value="0.9" />
             <output>90%</output>
           </label>
           <button class="btn" id="removeBtn">Redo removal</button>
         </div>
+        <p class="hint" id="separateHint" hidden>The vocal is separated from the mix by its center position. Anything else panned dead center (often snare or a lead synth) can come along with it, so listen to "Vocal only". Music + untouched vocal always add back up to your original song.</p>
         <div class="row">
           <button class="btn ghost" data-preview="original" id="previewOriginal">▶ Original</button>
-          <button class="btn ghost" data-preview="instrumental">▶ Music for singing</button>
+          <button class="btn ghost" data-preview="instrumental" id="previewMusic">▶ Music for singing</button>
+          <button class="btn ghost" data-preview="vocal" id="previewVocal" hidden>▶ Vocal only</button>
           <span class="spacer"></span>
           <button class="btn primary big" id="toRecord">Next: record your vocal →</button>
         </div>

@@ -8,6 +8,8 @@ Sing over any song and turn your take into a finished, studio-polished vocal, al
 - **My project:** upload a bounce of your DAW project, exported without the vocal.
 - **An artist's song:** upload any song and the lead vocal is removed automatically.
 
+- **A song with vocals:** upload a finished song and add effects to the vocal that's already in it. The lead vocal is separated from the mix and goes straight to the Studio; the rest becomes the music track. Separated vocal + music add back up to the original exactly, so "Dry" plays your original song and every effect changes only the vocal.
+
 The key and tempo are detected for you.
 
 **2. Record.** Plug in your headphones, hit the big record button and sing along while the music plays. Your take lines up exactly with the music. If it still sounds late, use *Advanced → Latency fix*. You can also import an existing vocal take.
