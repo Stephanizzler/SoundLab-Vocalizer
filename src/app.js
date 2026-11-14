@@ -7,6 +7,7 @@ import {
 import { parseMidi, targetsFromMidi } from './dsp/midi.js';
 import { recommendHarmony, VOICES, INTERVALS } from './dsp/harmony.js';
 import { encodeWav } from './dsp/wav.js';
+import { limit } from './dsp/limiter.js';
 import { toMono } from './dsp/util.js';
 import { openMicrophone, createRecorder } from './audio/recorder.js';
 import { PitchEditor } from './ui/pitch-editor.js';
@@ -48,14 +49,44 @@ const S = {
 function audioCtx() {
   if (!S.ctx) {
     S.ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+    // Master limiter: playback never clips, however loud music + effects get.
+    S.master = S.ctx.createDynamicsCompressor();
+    S.master.threshold.value = -1;
+    S.master.knee.value = 0;
+    S.master.ratio.value = 20;
+    S.master.attack.value = 0.002;
+    S.master.release.value = 0.1;
+    S.master.connect(S.ctx.destination);
     if (!S.latencyTouched) {
       const est = Math.round(((S.ctx.outputLatency || 0) + (S.ctx.baseLatency || 0)) * 1000 + 15);
       setSlider('latency', Math.min(400, est));
     }
   }
-  if (S.ctx.state === 'suspended') S.ctx.resume();
+  // 'suspended' (autoplay rules) or 'interrupted' (iOS: call, other app).
+  if (S.ctx.state !== 'running' && S.ctx.state !== 'closed') S.ctx.resume().catch(() => {});
   return S.ctx;
 }
+
+// ---- Phones: make sure audio can actually be heard.
+// iOS mutes Web Audio when the ring/silent switch is on unless the page asks
+// for "playback" audio; older iOS needs a (silent) <audio> element played
+// from a tap to switch into that mode.
+try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch { /* unsupported */ }
+let audioUnlocked = false;
+function unlockAudio() {
+  audioCtx();
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  try {
+    const silent = new Audio(URL.createObjectURL(new Blob([encodeWav([new Float32Array(2205)], 44100)], { type: 'audio/wav' })));
+    silent.setAttribute('playsinline', '');
+    silent.play().catch(() => {});
+  } catch { /* ignore */ }
+}
+for (const ev of ['pointerdown', 'touchend', 'keydown']) window.addEventListener(ev, unlockAudio, { capture: true, passive: true });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && S.ctx && S.ctx.state !== 'running') S.ctx.resume().catch(() => {});
+});
 const sampleRate = () => S.ctx?.sampleRate || 44100;
 
 // ================================================================ status
@@ -286,7 +317,7 @@ function startBuffers(tracks, offset, when) {
     src.buffer = buffer;
     const g = ctx.createGain();
     g.gain.value = gain;
-    src.connect(g).connect(ctx.destination);
+    src.connect(g).connect(S.master);
     if (offset < buffer.duration) src.start(when, offset);
     player.sources.push(src);
   }
@@ -485,10 +516,11 @@ async function loadVocal(samples) {
   if (!S.fx.harmonizer.layers.length) S.fx.harmonizer.layers = clone(S.harmRec.layers);
   buildLayers();
 
-  worker.postMessage({
+  S.workerLoad = {
     type: 'load',
     src: { raw: samples, sampleRate: sr, pitch: { t0: S.pitch.t0, hopSec: S.pitch.hopSec, f0: S.pitch.f0 }, backing: S.backing },
-  });
+  };
+  worker.postMessage(S.workerLoad);
   syncAllFx();
   requestRender(0);
   enableStep('studio');
@@ -531,7 +563,31 @@ function retarget() {
 }
 
 // ================================================================ effects worker
-const worker = new Worker(new URL('./engine/worker.js', import.meta.url), { type: 'module' });
+let worker = null;
+function startWorker() {
+  worker = new Worker(new URL('./engine/worker.js', import.meta.url), { type: 'module' });
+  worker.onmessage = onWorkerMessage;
+  worker.onerror = (e) => onWorkerFailure(e.message || 'the effects engine stopped (often: out of memory)');
+  if (S.workerLoad) worker.postMessage(S.workerLoad);
+}
+/** A render failed or the worker died: never leave the user without audio. */
+function onWorkerFailure(message) {
+  console.error('Effects engine:', message);
+  if (S.fx.autotune.engine === 'studio') {
+    // Most likely cause on phones: memory. Classic is light and instant.
+    S.fx.autotune.engine = 'classic';
+    markEngine();
+    status('The Studio engine couldn\'t run on this device, so Auto-Tune switched to the Classic engine.', { error: true });
+    worker.terminate();
+    startWorker();
+    requestRender(0);
+    return;
+  }
+  pendingRender = false;
+  setRenderChip('Render failed', true);
+  status(`Effects failed: ${message}. Playing your vocal without effects.`, { error: true });
+  while (renderWaiters.length) renderWaiters.shift()();
+}
 let renderId = 0;
 let renderTimer = 0;
 let pendingRender = false;
@@ -558,7 +614,7 @@ function requestRender(delay = 300) {
     });
   }, delay);
 }
-worker.onmessage = (e) => {
+function onWorkerMessage(e) {
   const m = e.data;
   if (m.type === 'analysis') {
     if (!pendingRender) setRenderChip(m.p < 1 ? `Preparing Studio engine ${Math.round(m.p * 100)}%…` : 'Up to date', m.p >= 1);
@@ -569,7 +625,7 @@ worker.onmessage = (e) => {
     const pctText = m.stage === 'analyzing' && m.p != null ? ` ${Math.round(m.p * 100)}%` : '';
     setRenderChip(`Rendering ${STAGE_LABEL[m.stage] || m.stage}${pctText}…`, false);
   }
-  else if (m.type === 'error') { setRenderChip('Render failed', true); status(`Effects failed: ${m.message}`, { error: true }); }
+  else if (m.type === 'error') onWorkerFailure(m.message);
   else if (m.type === 'done') {
     S.bus = { L: m.L, R: m.R };
     if (!renderQueued) {
@@ -580,8 +636,8 @@ worker.onmessage = (e) => {
     }
     if (S.ab === 'fx') restartIfPlaying();
   }
-};
-worker.onerror = (e) => { setRenderChip('Render failed', true); status(`Effects engine error: ${e.message}`, { error: true }); };
+}
+startWorker();
 function whenRendered() {
   if (!pendingRender && S.bus) return Promise.resolve();
   return new Promise((r) => renderWaiters.push(r));
@@ -1063,20 +1119,19 @@ $('bounceBtn').addEventListener('click', async () => {
   const gm = Number($('bounceMusic').value), gv = Number($('bounceVocal').value);
   const inst = channelsOf(S.instrumental);
   const iL = inst[0], iR = inst[1] || inst[0];
-  const { L: vL, R: vR } = S.bus;
+  const { L: vL, R: vR } = S.bus || { L: S.vocalRaw, R: S.vocalRaw };
   const len = Math.max(iL.length, vL.length);
   const L = new Float32Array(len), R = new Float32Array(len);
-  let peak = 0;
   for (let i = 0; i < len; i++) {
     L[i] = (iL[i] || 0) * gm + (vL[i] || 0) * gv;
     R[i] = (iR[i] || 0) * gm + (vR[i] || 0) * gv;
-    peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i]));
   }
-  const ceiling = 0.89; // -1 dBFS
-  if (peak > ceiling) { const g = ceiling / peak; for (let i = 0; i < len; i++) { L[i] *= g; R[i] *= g; } }
   const sr = sampleRate();
-  const mixUrl = URL.createObjectURL(new Blob([encodeWav([L, R], sr)], { type: 'audio/wav' }));
-  const vocUrl = URL.createObjectURL(new Blob([encodeWav([vL, vR], sr)], { type: 'audio/wav' }));
+  // Look-ahead limiter instead of turning the whole song down for one peak.
+  const mix = limit([L, R], sr, { ceiling: 0.95 }).channels;
+  const voc = limit([vL, vR], sr, { ceiling: 0.95 }).channels;
+  const mixUrl = URL.createObjectURL(new Blob([encodeWav(mix, sr)], { type: 'audio/wav' }));
+  const vocUrl = URL.createObjectURL(new Blob([encodeWav(voc, sr)], { type: 'audio/wav' }));
   const base = S.songName || 'SoundLab';
   $('bounceAudio').src = mixUrl;
   Object.assign($('dlMix'), { href: mixUrl, download: `${base} - SoundLab mix.wav` });

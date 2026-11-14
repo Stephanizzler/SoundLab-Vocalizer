@@ -12,7 +12,14 @@ import { hzToMidi } from './autotune.js';
  * Only phrases whose pitch actually changes are re-synthesised; everything
  * else (consonants, breaths, untouched phrases) is the original recording,
  * crossfaded in the gaps between notes.
+ *
+ * Memory: only frames inside sung phrases (plus a margin) are analysed and
+ * kept, envelopes are float32, and aperiodicity is kept on a coarse grid and
+ * interpolated per phrase when rendering. A 3-minute song needs ~100-200 MB.
  */
+const PAD_SEC = 0.03; // context rendered around each phrase
+const MARGIN_SEC = 0.05; // analysed around each phrase (must be >= PAD_SEC)
+
 export function studioAnalyze(x, sampleRate, pitch, { framePeriod = 5, apStride = 3, onProgress } = {}) {
   const fp = framePeriod / 1000;
   const n = Math.floor(x.length / sampleRate / fp) + 1;
@@ -30,39 +37,63 @@ export function studioAnalyze(x, sampleRate, pitch, { framePeriod = 5, apStride 
     else f0[i] = (pos - a < 0.5 ? fa : fb) || 0;
   }
   const stage = (from, to) => (p) => onProgress?.(from + (to - from) * p);
-  const refined = stoneMask(x, sampleRate, positions, f0);
-  stage(0, 0.08)(1);
-  const { spectrogram, fftSize } = cheapTrick(x, sampleRate, positions, refined, { onProgress: stage(0.08, 0.45) });
 
-  // Aperiodicity changes slowly: analyse every `apStride` frames and interpolate.
-  const cIdx = [];
-  for (let i = 0; i < n; i += apStride) cIdx.push(i);
-  if (cIdx[cIdx.length - 1] !== n - 1) cIdx.push(n - 1);
-  const coarse = d4c(x, sampleRate, Float64Array.from(cIdx, (i) => positions[i]), Float64Array.from(cIdx, (i) => refined[i]), fftSize, { onProgress: stage(0.45, 1) });
-  const half = fftSize / 2;
-  const unvoicedAp = new Float64Array(half + 1).fill(1 - 1e-12);
-  const aperiodicity = new Array(n);
-  let c = 0;
-  for (let i = 0; i < n; i++) {
-    while (c + 1 < cIdx.length && cIdx[c + 1] <= i) c++;
-    if (!(refined[i] > 0)) { aperiodicity[i] = unvoicedAp; continue; }
-    const a = cIdx[c], b = cIdx[Math.min(cIdx.length - 1, c + 1)];
-    const va = refined[a] > 0, vb = refined[b] > 0;
-    if (a === i || !vb || b === a) { aperiodicity[i] = va ? coarse[c] : vb ? coarse[c + 1] : unvoicedAp; continue; }
-    if (!va) { aperiodicity[i] = coarse[c + 1]; continue; }
-    const w = (i - a) / (b - a);
-    const A = coarse[c], B = coarse[c + 1];
-    const out = new Float64Array(half + 1);
-    for (let k = 0; k <= half; k++) out[k] = A[k] + (B[k] - A[k]) * w;
-    aperiodicity[i] = out;
+  // Frames worth analysing: sung phrases plus a margin.
+  const list = phrases(f0, Math.round(0.06 / fp));
+  const margin = Math.round(MARGIN_SEC / fp);
+  const needed = [];
+  for (const ph of list) {
+    const a = Math.max(0, ph.start - margin), b = Math.min(n, ph.end + margin);
+    for (let i = Math.max(a, needed.length ? needed[needed.length - 1] + 1 : 0); i < b; i++) needed.push(i);
   }
-  return { f0: refined, spectrogram, aperiodicity, fftSize, framePeriod, length: x.length, sampleRate };
+  const subPos = Float64Array.from(needed, (i) => positions[i]);
+  const refinedSub = stoneMask(x, sampleRate, subPos, Float64Array.from(needed, (i) => f0[i]));
+  const refined = new Float64Array(n);
+  needed.forEach((i, k) => { refined[i] = refinedSub[k]; });
+  stage(0, 0.08)(1);
+
+  const { spectrogram: spSub, fftSize } = cheapTrick(x, sampleRate, subPos, refinedSub, { onProgress: stage(0.08, 0.45) });
+  const spectrogram = new Array(n); // sparse: only analysed frames are filled
+  needed.forEach((i, k) => { spectrogram[i] = spSub[k]; });
+
+  // Aperiodicity changes slowly: analyse every `apStride` voiced frames.
+  const apIdx = needed.filter((i) => i % apStride === 0 && refined[i] > 0);
+  const apCoarse = d4c(x, sampleRate, Float64Array.from(apIdx, (i) => positions[i]), Float64Array.from(apIdx, (i) => refined[i]), fftSize, { onProgress: stage(0.45, 1) });
+  // Re-detect phrases on the refined F0 so rendering uses exactly what was analysed.
+  return {
+    f0: refined, spectrogram, apIdx, apCoarse, fftSize, framePeriod, length: x.length, sampleRate,
+    phrases: phrases(refined, Math.round(0.06 / fp)).filter((ph) => spectrogram[ph.start] && spectrogram[ph.end - 1]),
+  };
+}
+
+/** Per-frame aperiodicity for frames a..b-1, interpolated from the coarse grid. */
+function apSlice(an, a, b) {
+  const half = an.fftSize / 2;
+  const unvoiced = new Float32Array(half + 1).fill(1 - 1e-12);
+  const { apIdx, apCoarse, f0 } = an;
+  const out = [];
+  let c = 0;
+  while (c + 1 < apIdx.length && apIdx[c + 1] <= a) c++;
+  for (let i = a; i < b; i++) {
+    while (c + 1 < apIdx.length && apIdx[c + 1] <= i) c++;
+    if (!(f0[i] > 0) || !apIdx.length) { out.push(unvoiced); continue; }
+    const last = c + 1 >= apIdx.length;
+    const ia = apIdx[c], ib = last ? ia : apIdx[c + 1];
+    if (last || ia > i) { out.push(apCoarse[c]); continue; }
+    if (ib - ia > 12) { out.push(apCoarse[i - ia <= ib - i ? c : c + 1]); continue; } // gap: nearest
+    const w = (i - ia) / (ib - ia);
+    const A = apCoarse[c], B = apCoarse[c + 1];
+    const v = new Float32Array(half + 1);
+    for (let k = 0; k <= half; k++) v[k] = A[k] + (B[k] - A[k]) * w;
+    out.push(v);
+  }
+  return out;
 }
 
 /** Warp an envelope along frequency: factor > 1 moves formants up. */
 function warpEnvelope(env, factor) {
   const n = env.length;
-  const out = new Float64Array(n);
+  const out = new Float32Array(n);
   for (let k = 0; k < n; k++) {
     const src = k / factor;
     const i = Math.floor(src);
@@ -115,23 +146,25 @@ export function studioRender(an, x, pitch, corrected, { formant = 1, cache = nul
     newF0[i] = an.f0[i] * 2 ** (s / 12);
   }
   const out = Float32Array.from(x);
-  const pad = Math.round(0.03 / fp); // 30 ms of context around each phrase
+  const pad = Math.round(PAD_SEC / fp);
   const fadeLen = Math.round(0.02 * sr);
-  const list = phrases(an.f0, Math.round(0.06 / fp));
   const used = new Set();
-  list.forEach((ph, pi) => {
+  an.phrases.forEach((ph, pi) => {
     let maxShift = 0;
     for (let i = ph.start; i < ph.end; i++) maxShift = Math.max(maxShift, Math.abs(shift[i]));
     if (maxShift < 0.005 && formant === 1) return; // untouched: keep the original
-    const a = Math.max(0, ph.start - pad);
-    const b = Math.min(nF, ph.end + pad);
+    let a = Math.max(0, ph.start - pad);
+    let b = Math.min(nF, ph.end + pad);
+    while (!an.spectrogram[a]) a++;
+    while (!an.spectrogram[b - 1]) b--;
     const key = hashF0(newF0, a, b, formant);
     used.add(key);
     let seg = cache?.get(key);
     if (!seg) {
-      const sp = an.spectrogram.slice(a, b).map((e, k) => (formant !== 1 && an.f0[a + k] > 0 ? warpEnvelope(e, formant) : e));
+      const sp = [];
+      for (let i = a; i < b; i++) sp.push(formant !== 1 && an.f0[i] > 0 ? warpEnvelope(an.spectrogram[i], formant) : an.spectrogram[i]);
       const len = Math.round((b - a) * fp * sr);
-      seg = Float32Array.from(synthesis(newF0.slice(a, b), sp, an.aperiodicity.slice(a, b), an.fftSize, an.framePeriod, sr, len));
+      seg = Float32Array.from(synthesis(newF0.slice(a, b), sp, apSlice(an, a, b), an.fftSize, an.framePeriod, sr, len));
       cache?.set(key, seg);
     }
     const s0 = Math.round(a * fp * sr);
@@ -143,7 +176,7 @@ export function studioRender(an, x, pitch, corrected, { formant = 1, cache = nul
       else if (j > seg.length - fadeOut) w = (seg.length - j) / fadeOut;
       out[s0 + j] = x[s0 + j] * (1 - w) + seg[j] * w;
     }
-    onProgress?.((pi + 1) / list.length);
+    onProgress?.((pi + 1) / an.phrases.length);
   });
   if (cache) for (const k of [...cache.keys()]) if (!used.has(k)) cache.delete(k);
   return out;

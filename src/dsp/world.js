@@ -352,7 +352,7 @@ export function cheapTrick(x, fs, positions, f0, { fftSize = getFFTSizeForCheapT
       inv.specIm[i] = 0;
     }
     inv.inverse();
-    const env = new Float64Array(half + 1);
+    const env = new Float32Array(half + 1); // float32 halves memory; plenty of precision
     for (let i = 0; i <= half; i++) env[i] = Math.exp(inv.waveform[i]);
     spectrogram.push(env);
     if (onProgress && fr % 200 === 0) onProgress(fr / f0.length);
@@ -404,7 +404,8 @@ export function d4c(x, fs, positions, f0, fftSize, { threshold = kThreshold, onP
   const randn = new Randn();
   const half = fftSize / 2;
   const aperiodicity = [];
-  for (let i = 0; i < f0.length; i++) aperiodicity.push(new Float64Array(half + 1).fill(1.0 - kMySafeGuardMinimum));
+  const fullyAperiodic = new Float32Array(half + 1).fill(1.0 - kMySafeGuardMinimum); // shared, read-only
+  for (let i = 0; i < f0.length; i++) aperiodicity.push(fullyAperiodic);
 
   const fftSizeD4C = 2 ** (1 + Math.trunc(Math.log((4.0 * fs) / kFloorF0D4C + 1) / Math.LN2));
   const f = new RealFFT(fftSizeD4C);
@@ -487,7 +488,8 @@ export function d4c(x, fs, positions, f0, fftSize, { threshold = kThreshold, onP
       const v = 10 * Math.log10(psCoarse[halfD - boundary - 1] / psCoarse[halfD]);
       coarseAp[b + 1] = Math.min(0.0, v + (cf0 - 100) / 50.0);
     }
-    const ap = aperiodicity[i];
+    const ap = new Float32Array(half + 1);
+    aperiodicity[i] = ap;
     interp1(coarseAxis, coarseAp, nAp + 2, freqAxis, half + 1, ap);
     for (let k = 0; k <= half; k++) ap[k] = 10 ** (ap[k] / 20.0);
     if (onProgress && i % 100 === 0) onProgress(i / f0.length);

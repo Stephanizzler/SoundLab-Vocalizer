@@ -164,3 +164,22 @@ test('full chain renders with every effect on and caches stages', async () => {
   await renderChain({ raw: x, sampleRate: SR, pitch, backing: null }, st, cache, { onStage: (s) => stages.push(s) });
   assert.deepEqual(stages, ['reverb'], 'only the changed stage re-renders');
 });
+
+test('limiter stops peaks at the ceiling and leaves quiet audio alone', async () => {
+  const { limit } = await import('../src/dsp/limiter.js');
+  const sr = 44100;
+  const quiet = Float32Array.from({ length: sr / 2 }, (_, i) => 0.5 * Math.sin(i * 0.05));
+  const q = limit([quiet], sr);
+  assert.equal(q.reduced, false);
+  assert.equal(q.channels[0], quiet);
+  // Quiet tone with loud bursts (like WORLD's peaky output).
+  const loud = Float32Array.from({ length: sr }, (_, i) => Math.sin(i * 0.05) * (i % 11025 < 2000 ? 3 : 0.5));
+  const r = limit([loud, loud.map((v) => -v)], sr, { ceiling: 0.95 });
+  let peak = 0;
+  for (const c of r.channels) for (const v of c) peak = Math.max(peak, Math.abs(v));
+  assert.ok(peak <= 0.95 + 1e-6, `peak ${peak}`);
+  // Away from the bursts (after release) the level is restored.
+  let p2 = 0;
+  for (let i = 8000; i < 10500; i++) p2 = Math.max(p2, Math.abs(r.channels[0][i]));
+  assert.ok(p2 > 0.45, `level after release ${p2}`);
+});
